@@ -1467,9 +1467,15 @@ namespace WindBot.Game
 
         private void OnSelectChain(BinaryReader packet)
         {
+            // TDOANE's rules engine (kaibapro-core) uses the older layout of this message:
+            // one "forced" flag for the whole list, before the hint timings, instead of
+            // one per card. Reading the newer layout made the bot read past the end of the
+            // message when two or more cards could chain, so it never answered and the
+            // duel hung until it timed out.
             packet.ReadByte(); // player
             int count = packet.ReadByte();
             packet.ReadByte(); // specount
+            bool forced = packet.ReadByte() != 0;
             int hint1 = packet.ReadInt32(); // hint1
             int hint2 = packet.ReadInt32(); // hint2
 
@@ -1481,7 +1487,6 @@ namespace WindBot.Game
             for (int i = 0; i < count; ++i)
             {
                 packet.ReadByte(); // flag
-                bool forced = packet.ReadByte() != 0;
 
                 int id = packet.ReadInt32();
                 int con = GetLocalPlayer(packet.ReadByte());
@@ -2182,8 +2187,8 @@ namespace WindBot.Game
 
         private void OnConfirmCards(BinaryReader packet)
         {
+            // TDOANE's rules engine sends the older layout, without the skip_panel byte.
             /*int playerid = */packet.ReadByte();
-            /*int skip_panel = */packet.ReadByte();
             int count = packet.ReadByte();
             for (int i = 0; i < count; ++ i)
             {
