@@ -35,6 +35,13 @@ namespace WindBot.Game
         private int _select_hint;
         private GameMessage _lastMessage;
 
+        // Bot Theater: optional pause before each visible decision, so the duel is
+        // easier to follow. Set in milliseconds by the WINDBOT_DELAY_MS environment
+        // variable, either a range ("100-300") or a single value ("200").
+        private static readonly Random _delayRandom = new Random();
+        private int _delayMin;
+        private int _delayMax;
+
         public GameBehavior(GameClient game)
         {
             Game = game;
@@ -54,6 +61,39 @@ namespace WindBot.Game
             Deck = Deck.Load(Game.DeckFile ?? _ai.Executor.Deck);
 
             _select_hint = 0;
+            ParseDelay(Environment.GetEnvironmentVariable("WINDBOT_DELAY_MS"));
+        }
+
+        private void ParseDelay(string text)
+        {
+            _delayMin = 0;
+            _delayMax = 0;
+            if (string.IsNullOrEmpty(text))
+                return;
+            string[] parts = text.Split('-');
+            int min, max;
+            if (!int.TryParse(parts[0].Trim(), out min))
+                return;
+            max = min;
+            if (parts.Length > 1 && !int.TryParse(parts[1].Trim(), out max))
+                max = min;
+            if (min < 0)
+                min = 0;
+            if (max < min)
+                max = min;
+            _delayMin = min;
+            _delayMax = max;
+        }
+
+        private void PauseBeforeAction()
+        {
+            if (_delayMax <= 0)
+                return;
+            int ms;
+            lock (_delayRandom)
+                ms = _delayRandom.Next(_delayMin, _delayMax + 1);
+            if (ms > 0)
+                Thread.Sleep(ms);
         }
 
         public int GetLocalPlayer(int player)
@@ -92,7 +132,13 @@ namespace WindBot.Game
                 GameMessage msg = (GameMessage)packet.ReadByte();
                 Game.SetCurrentSTOCMessage(msg.ToString());
                 if (_messages.ContainsKey(msg))
+                {
+                    if (msg == GameMessage.SelectIdleCmd || msg == GameMessage.SelectBattleCmd
+                        || msg == GameMessage.SelectEffectYn || msg == GameMessage.SelectYesNo
+                        || msg == GameMessage.SelectOption)
+                        PauseBeforeAction();
                     _messages[msg](packet);
+                }
                 _lastMessage = msg;
                 return;
             }
@@ -1466,11 +1512,15 @@ namespace WindBot.Game
 
             if (cards.Count == 1 && forces[0])
             {
+                PauseBeforeAction();
                 Connection.Send(CtosMessage.Response, 0);
                 return;
             }
 
-            Connection.Send(CtosMessage.Response, _ai.OnSelectChain(cards, descs, forces, hint1 | hint2));
+            int chainResult = _ai.OnSelectChain(cards, descs, forces, hint1 | hint2);
+            if (chainResult != -1)
+                PauseBeforeAction(); // pause only when actually activating something
+            Connection.Send(CtosMessage.Response, chainResult);
         }
 
         private void OnSelectCounter(BinaryReader packet)
