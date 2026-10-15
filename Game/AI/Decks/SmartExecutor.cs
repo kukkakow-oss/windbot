@@ -22,6 +22,8 @@ namespace WindBot.Game.AI.Decks
     // that to decide when a card is worth playing and what to aim it at:
     //  - card draw and searches first, then summons, then everything else
     //  - field wipes only when the opponent would lose more than we would
+    //  - removal that picks out cards one at a time only when the opponent has a card
+    //    it can hit (otherwise it would have to hit one of ours)
     //  - set Spells/Traps are kept for the opponent's turn (their summons, attacks,
     //    or End Phase) unless they help us right now
     //  - negation only against the opponent, never against our own plays
@@ -147,6 +149,25 @@ namespace WindBot.Game.AI.Decks
         private static readonly Regex DebuffRx = new Regex(@"loses? (\d+|atk)|cannot attack|cannot declare an attack|face-down defense position|take control|gain control", Rx);
         private static readonly Regex SelfCostRx = new Regex(@"\b(tribute|send|banish) this card( from the field)?\b[^.;]*;", Rx);
 
+        // What a removal effect that picks out cards one at a time can reach.
+        private class Aim
+        {
+            public bool Monsters, Spells, Hand, Grave;
+            public bool FaceUpOnly, FaceDownOnly;
+            public bool Targets;   // "target": protected cards don't count
+        }
+
+        private static readonly Regex AimVerbRx = new Regex(@"\b(destroy|banish|return|shuffle|send|negate|change|place|take control|gain control)\b", Rx);
+        private static readonly Regex AimObjectRx = new Regex(@"\b(\d+|a|an|one|two|three|up to \w+)\s+((face-up|face-down|set|attack position|defense position|other|effect)\s+)*(spell/traps?|spells?/traps?|spell or trap|monsters?|cards?|spells?|traps?)( cards?)?\b[^.;]*?\b(on the field|your opponent controls|they control|your opponent's field)", Rx);
+        private static readonly Regex AimOpponentRx = new Regex(@"your opponent's\s+((face-up|face-down|set)\s+)?(spell/traps?|monsters?|cards?|spells?|traps?|hand|gy|graveyard)", Rx);
+        private static readonly Regex HandWordRx = new Regex(@"\bhand\b", Rx);
+        private static readonly Regex GraveWordRx = new Regex(@"\b(gy|graveyard)\b", Rx);
+        private static readonly Regex SetWordRx = new Regex(@"\bset\b", Rx);
+        private static readonly Regex YouCanRx = new Regex(@"\byou can\b", Rx);
+
+        private static readonly Dictionary<int, Aim> CardAims = new Dictionary<int, Aim>();
+        private static readonly Dictionary<int, Aim> EffectAims = new Dictionary<int, Aim>();
+
         private static readonly Dictionary<int, Profile> Profiles = new Dictionary<int, Profile>();
         private static readonly Profile NoProfile = new Profile();
 
@@ -233,6 +254,72 @@ namespace WindBot.Game.AI.Decks
             p.Debuff = DebuffRx.IsMatch(text);
             p.SelfCost = SelfCostRx.IsMatch(text);
             return p;
+        }
+
+        // Reads which of the opponent's cards a "pick 1 card" removal effect can reach, e.g.
+        // "Target 1 Spell/Trap on the field; destroy it". Null if the text has none.
+        private static Aim ReadAim(string description)
+        {
+            if (string.IsNullOrEmpty(description))
+                return null;
+            string text = description.Replace('\r', ' ').Replace('\n', ' ');
+            Aim aim = null;
+            foreach (string sentence in text.Split('.'))
+            {
+                if (!AimVerbRx.IsMatch(sentence))
+                    continue;
+                List<Match> phrases = AimObjectRx.Matches(sentence).Cast<Match>()
+                    .Concat(AimOpponentRx.Matches(sentence).Cast<Match>()).ToList();
+                foreach (Match phrase in phrases)
+                {
+                    string words = phrase.Value.ToLowerInvariant();
+                    if (aim == null)
+                        aim = new Aim();
+                    bool zoneNamed = false;
+                    if (words.Contains("monster"))
+                    {
+                        aim.Monsters = true;
+                        zoneNamed = true;
+                    }
+                    if (words.Contains("spell") || words.Contains("trap"))
+                    {
+                        aim.Spells = true;
+                        zoneNamed = true;
+                    }
+                    if (HandWordRx.IsMatch(words))
+                    {
+                        aim.Hand = true;
+                        zoneNamed = true;
+                    }
+                    if (GraveWordRx.IsMatch(words))
+                    {
+                        aim.Grave = true;
+                        zoneNamed = true;
+                    }
+                    if (!zoneNamed)
+                    {
+                        aim.Monsters = true;   // "1 card": any card on the field
+                        aim.Spells = true;
+                    }
+                    if (words.Contains("face-up"))
+                        aim.FaceUpOnly = true;
+                    else if (words.Contains("face-down") || SetWordRx.IsMatch(words))
+                        aim.FaceDownOnly = true;
+                    if (sentence.IndexOf("target", StringComparison.OrdinalIgnoreCase) >= 0)
+                        aim.Targets = true;
+                }
+            }
+            if (aim != null && aim.FaceUpOnly && aim.FaceDownOnly)
+            {
+                aim.FaceUpOnly = false;   // different phrases disagree: don't restrict
+                aim.FaceDownOnly = false;
+            }
+            return aim;
+        }
+
+        private static bool HasSeveralEffects(string text)
+        {
+            return text.Contains("(2)") || text.Contains("\u25CF") || YouCanRx.Matches(text).Count >= 2;
         }
 
         // -----------------------------------------------------------------------------
@@ -402,6 +489,12 @@ namespace WindBot.Game.AI.Decks
             if (p.MassOpponent && !OpponentHasCardsFor(p))
                 return false;
 
+            // Removal that picks out cards one at a time: only worth it if the opponent has
+            // something it can hit. Otherwise the only legal targets are our own cards.
+            Aim aim = AimOfActivation();
+            if (aim != null && !OpponentHasTargetFor(aim))
+                return false;
+
             if (facedownSpellTrap && !GoodTimeForSetCard(p))
                 return false;
 
@@ -491,6 +584,62 @@ namespace WindBot.Game.AI.Decks
             if (p.MassMonsters && Enemy.GetMonsters().Count > 0)
                 return true;
             return p.MassSpells && Enemy.GetSpells().Count > 0;
+        }
+
+        // What the effect being activated can hit, if it's "pick 1 card" removal. Null when it
+        // isn't, or when the card has several effects and we can't tell which one this is.
+        private Aim AimOfActivation()
+        {
+            int desc = ActivateDescription;
+            int code = desc > 0 ? desc >> 4 : 0;
+            if (code > 0 && (code == Card.Id || code == Card.Alias))
+            {
+                // The effect's own description, when the card has one.
+                Aim fromEffect;
+                lock (Profiles)
+                {
+                    if (!EffectAims.TryGetValue(desc, out fromEffect))
+                    {
+                        fromEffect = ReadAim(OptionText(desc));
+                        EffectAims[desc] = fromEffect;
+                    }
+                }
+                if (fromEffect != null)
+                    return fromEffect;
+            }
+            if (Card.Data == null || string.IsNullOrEmpty(Card.Data.Description))
+                return null;
+            // Activating a Spell/Trap card uses its main text; otherwise only trust the
+            // whole text when the card has a single effect.
+            bool activatingSpellTrap = (Is(Card, CardType.Spell) || Is(Card, CardType.Trap))
+                && (Card.Location == CardLocation.Hand || Card.Location == CardLocation.SpellZone && Card.IsFacedown());
+            if (!activatingSpellTrap && HasSeveralEffects(Card.Data.Description))
+                return null;
+            Aim fromCard;
+            lock (Profiles)
+            {
+                if (!CardAims.TryGetValue(Card.Id, out fromCard))
+                {
+                    fromCard = ReadAim(Card.Data.Description);
+                    CardAims[Card.Id] = fromCard;
+                }
+            }
+            return fromCard;
+        }
+
+        private bool OpponentHasTargetFor(Aim aim)
+        {
+            Func<ClientCard, bool> fits = c => c != null
+                && (!aim.FaceUpOnly || c.IsFaceup())
+                && (!aim.FaceDownOnly || c.IsFacedown())
+                && (!aim.Targets || !c.IsShouldNotBeTarget());
+            if (aim.Monsters && Enemy.GetMonsters().Any(fits))
+                return true;
+            if (aim.Spells && Enemy.GetSpells().Any(fits))
+                return true;
+            if (aim.Hand && Enemy.Hand.Count > 0)
+                return true;
+            return aim.Grave && Enemy.Graveyard.Count > 0;
         }
 
         private bool CanAttackWell(ClientCard card)
