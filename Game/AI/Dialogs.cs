@@ -119,8 +119,19 @@ namespace WindBot.Game.AI
             InternalSendMessage(_endturn);
         }
 
+        // Bot Theater: the direct-attack lines (attacking directly, or being attacked directly)
+        // are only said this often, in percent, so they don't repeat every turn.
+        private const int DirectAttackChatChance = 50;
+
+        private static bool ChanceToSay(int percent)
+        {
+            return Program.Rand.Next(100) < percent;
+        }
+
         public void SendDirectAttack(string attacker)
         {
+            if (!ChanceToSay(DirectAttackChatChance))
+                return;
             InternalSendMessage(_directattack, attacker);
         }
 
@@ -135,6 +146,8 @@ namespace WindBot.Game.AI
 
         public void SendOnDirectAttack(string attacker)
         {
+            if (!ChanceToSay(DirectAttackChatChance))
+                return;
             if (string.IsNullOrEmpty(attacker))
             {
                 attacker = _facedownmonstername;
@@ -143,6 +156,8 @@ namespace WindBot.Game.AI
         }
         public void SendOnDirectAttack()
         {
+            if (!ChanceToSay(DirectAttackChatChance))
+                return;
             InternalSendMessage(_ondirectattack);
         }
 
