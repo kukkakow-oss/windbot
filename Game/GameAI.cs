@@ -12,6 +12,13 @@ namespace WindBot.Game
         public Duel Duel { get; private set; }
         public Executor Executor { get; set; }
 
+        /// <summary>
+        /// Bot Theater: false in a tag duel while this bot's teammate is the one playing for
+        /// their side. Every bot on a side sees the same duel messages, so lines that react to
+        /// them (a new turn, being attacked directly) only come from the teammate who's playing.
+        /// </summary>
+        public bool IsActiveTeammate { get; set; }
+
         private Dialogs _dialogs;
 
         // record activated count to prevent infinite actions
@@ -30,6 +37,7 @@ namespace WindBot.Game
 
             _dialogs = new Dialogs(game);
             _activatedCards = new Dictionary<int, int>();
+            IsActiveTeammate = true;
         }
 
         private void CheckSurrender()
@@ -129,7 +137,7 @@ namespace WindBot.Game
             _attackersWithInvalidPreselectedTarget.Clear();
             ClearSelections();
             _selectingPendulumSummon = false;
-            if (Duel.Player == 0 && Duel.Phase == DuelPhase.Draw)
+            if (Duel.Player == 0 && Duel.Phase == DuelPhase.Draw && IsActiveTeammate)
             {
                 _dialogs.SendNewTurn();
             }
@@ -165,7 +173,8 @@ namespace WindBot.Game
         /// </summary>
         public void OnDirectAttack(ClientCard card)
         {
-            _dialogs.SendOnDirectAttack(card.Name);
+            if (IsActiveTeammate)
+                _dialogs.SendOnDirectAttack(card.Name);
             CheckSurrender();
         }
 

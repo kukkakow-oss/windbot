@@ -501,6 +501,7 @@ namespace WindBot.Game
                 : _room.Position % 2 == 1);
             _botDeckNeedsInitialHandSync = _isTag && !_botDeckActive;
             _duel.Fields[0].DeckTrackingActive = _botDeckActive;
+            _ai.IsActiveTeammate = _botDeckActive;  // Bot Theater: only the playing teammate reacts in chat
             ValidateBotDeckCount();
 
             // in case of ending duel in chain's solving
@@ -685,6 +686,7 @@ namespace WindBot.Game
                     ValidateBotDeckCount();
                 _botDeckActive = !_botDeckActive;
                 field.DeckTrackingActive = _botDeckActive;
+                _ai.IsActiveTeammate = _botDeckActive;  // Bot Theater: only the playing teammate reacts in chat
             }
 
             field.Deck.Clear();
