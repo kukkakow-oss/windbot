@@ -719,10 +719,13 @@ namespace WindBot.Game.AI.Decks
             if (level <= 4)
                 return true;
             int tributes = level >= 7 ? 2 : 1;
-            int newPower = Math.Max(Atk(card), Def(card));
-            // Only Tribute monsters that are weaker than what we'd get.
-            int weaker = Bot.GetMonsters().Count(m => m != card && Math.Max(Atk(m), Def(m)) < newPower);
-            return weaker >= tributes;
+            // Only Tribute monsters worth less than what we'd get (by the same Value score
+            // OnSelectTribute uses, counting the new monster at its best stat, on the field).
+            int newValue = Math.Max(Atk(card), Def(card)) + level * 30 + 300;
+            if (Is(card, CardType.Effect))
+                newValue += 250;
+            int cheaper = Bot.GetMonsters().Count(m => m != card && Value(m) < newValue);
+            return cheaper >= tributes;
         }
 
         private int SummonScore(ClientCard card)
@@ -1000,6 +1003,123 @@ namespace WindBot.Game.AI.Decks
                     picked.Add(card);
             }
             return picked;
+        }
+
+        // -----------------------------------------------------------------------------
+        // Tributes and level sums: Tribute Summons, Ritual Summons, Synchro Summons.
+        //
+        // These pick the cheapest set of cards that does the job, by the same Value score
+        // used for materials and costs, so Tokens and Normal Monsters go before useful
+        // Effect Monsters. Tributing one of the opponent's monsters (Soul Exchange, Kaiju,
+        // Lava Golem...) counts as a gain, biggest threat first. If our choice is somehow
+        // not allowed, WindBot's usual choice is used instead.
+
+        // With more cards to choose from than this, we don't try every combination; we
+        // take the cheapest cards first instead (e.g. a Ritual Spell that can use the Deck).
+        private const int MaxCardsToTryEveryCombination = 14;
+
+        // What giving up this card costs us.
+        private static int TributeCost(ClientCard card)
+        {
+            return card.Controller == 0 ? Value(card) : -Threat(card);
+        }
+
+        public override IList<ClientCard> OnSelectTribute(IList<ClientCard> cards, int min, int max, int hint, bool cancelable)
+        {
+            if (cards.Count == 0)
+                return null;
+            List<ClientCard> cheapestFirst = cards.OrderBy(c => TributeCost(c)).ToList();
+            List<ClientCard> best = CheapestValidSet(cheapestFirst, picked => CanTotal(picked, 0, 0, min, max));
+            if (best != null)
+                return best;
+            return AI.FindTributeSelection(cheapestFirst, min, max);
+        }
+
+        public override IList<ClientCard> OnSelectSum(IList<ClientCard> cards, IList<ClientCard> mandatoryCards,
+            int sum, int min, int max, int hint, bool exactEqual)
+        {
+            // Only Ritual tributes and Synchro Materials; other "total Levels" choices
+            // (e.g. sending cards from the Deck) are left to WindBot.
+            if (hint != HintMsg.Release && hint != HintMsg.SynchroMaterial)
+                return null;
+            if (cards.Count == 0)
+                return null;
+            List<ClientCard> cheapestFirst = cards.OrderBy(c => TributeCost(c)).ToList();
+            List<ClientCard> best = CheapestValidSet(cheapestFirst, picked =>
+            {
+                List<ClientCard> all = mandatoryCards.Concat(picked).ToList();
+                if (exactEqual)
+                    return picked.Count >= min && picked.Count <= max && CanTotal(all, 0, 0, sum, sum);
+                return IsJustEnough(all, sum);
+            });
+            if (best != null)
+                return best;
+            return AI.FindSumSelection(cheapestFirst, mandatoryCards, sum, min, max, exactEqual);
+        }
+
+        // Tries every combination of the cards and returns the allowed one that costs us
+        // least (fewer cards on a tie), or null if none is allowed or there are too many cards.
+        private static List<ClientCard> CheapestValidSet(List<ClientCard> cards, Func<List<ClientCard>, bool> allowed)
+        {
+            if (cards.Count > MaxCardsToTryEveryCombination)
+                return null;
+            List<ClientCard> best = null;
+            long bestCost = 0;
+            int combinations = 1 << cards.Count;
+            for (int mask = 0; mask < combinations; ++mask)
+            {
+                List<ClientCard> picked = new List<ClientCard>();
+                long cost = 0;
+                for (int i = 0; i < cards.Count; ++i)
+                {
+                    if ((mask & (1 << i)) != 0)
+                    {
+                        picked.Add(cards[i]);
+                        cost += TributeCost(cards[i]);
+                    }
+                }
+                if (best != null && (cost > bestCost || (cost == bestCost && picked.Count >= best.Count)))
+                    continue;
+                if (!allowed(picked))
+                    continue;
+                best = picked;
+                bestCost = cost;
+            }
+            return best;
+        }
+
+        // True if the cards' Levels (or Tribute counts) can add up to between min and max.
+        // Some cards can count as either of two numbers (OpParam1 or OpParam2).
+        private static bool CanTotal(IList<ClientCard> cards, int index, long total, long min, long max)
+        {
+            if (total > max)
+                return false;
+            if (index == cards.Count)
+                return total >= min;
+            ClientCard card = cards[index];
+            if (CanTotal(cards, index + 1, total + card.OpParam1, min, max))
+                return true;
+            return card.OpParam2 > 0 && card.OpParam2 != card.OpParam1
+                && CanTotal(cards, index + 1, total + card.OpParam2, min, max);
+        }
+
+        // "Total Levels equal or more than": the cards must reach the sum, but without any
+        // card that isn't needed (the game's rule for these selections).
+        private static bool IsJustEnough(IList<ClientCard> cards, int sum)
+        {
+            if (cards.Count == 0)
+                return sum <= 0;
+            long lowest = 0;
+            long highest = 0;
+            int smallestCard = int.MaxValue;
+            foreach (ClientCard card in cards)
+            {
+                int low = card.OpParam2 > 0 ? Math.Min(card.OpParam1, card.OpParam2) : card.OpParam1;
+                lowest += low;
+                highest += Math.Max(card.OpParam1, card.OpParam2);
+                smallestCard = Math.Min(smallestCard, low);
+            }
+            return highest >= sum && lowest - smallestCard < sum;
         }
 
         // -----------------------------------------------------------------------------
