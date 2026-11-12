@@ -42,6 +42,10 @@ namespace WindBot.Game
         private int _delayMin;
         private int _delayMax;
 
+        // Bot Theater: set to 1 by the bot script when the game has "Tag: split zones" on.
+        private readonly bool _splitZonesSetting =
+            Environment.GetEnvironmentVariable("WINDBOT_SPLIT_ZONES") == "1";
+
         public GameBehavior(GameClient game)
         {
             Game = game;
@@ -502,6 +506,10 @@ namespace WindBot.Game
             _botDeckNeedsInitialHandSync = _isTag && !_botDeckActive;
             _duel.Fields[0].DeckTrackingActive = _botDeckActive;
             _ai.IsActiveTeammate = _botDeckActive;  // Bot Theater: only the playing teammate reacts in chat
+            // Bot Theater: split-zone tag duels. A team's lower lobby slot is its first player,
+            // who has the left section of the field.
+            _ai.SplitZones = _isTag && _splitZonesSetting;
+            _ai.LeftSection = _room.Position % 2 == 0;
             ValidateBotDeckCount();
 
             // in case of ending duel in chain's solving

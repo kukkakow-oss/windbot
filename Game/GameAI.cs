@@ -19,6 +19,42 @@ namespace WindBot.Game
         /// </summary>
         public bool IsActiveTeammate { get; set; }
 
+        /// <summary>
+        /// Bot Theater: true in a split-zone tag duel (WINDBOT_SPLIT_ZONES=1). A teammate then
+        /// only attacks with, and uses the Ignition Effects of, cards in its own section of the
+        /// field: the left one for its team's first player, the right one for the second, plus
+        /// the shared middle zones and Field Zone.
+        /// </summary>
+        public bool SplitZones { get; set; }
+
+        /// <summary>
+        /// Bot Theater: whether this bot's section is the left one (it's its team's first player).
+        /// </summary>
+        public bool LeftSection { get; set; }
+
+        /// <summary>
+        /// Bot Theater: whether this card of ours is in our own section (or a shared zone), so we
+        /// can attack with it, change its position and use its Ignition Effects on our turn. Always true outside
+        /// split-zone tag duels, and for cards that aren't in a Monster or Spell/Trap Zone.
+        /// </summary>
+        public bool InOwnSection(ClientCard card)
+        {
+            if (!SplitZones || card == null || card.Controller != 0)
+                return true;
+            int seq = card.Sequence;
+            if (card.Location == CardLocation.MonsterZone)
+            {
+                // Main Monster Zones 0-4 (2 is shared), Extra Monster Zones 5 (left) and 6 (right)
+                return seq == 2 || (LeftSection ? seq < 2 || seq == 5 : seq > 2 && seq < 5 || seq == 6);
+            }
+            if (card.Location == CardLocation.SpellZone)
+            {
+                // Spell/Trap Zones 0-4 (2 is shared), Field Zone 5 (shared), older Pendulum Zones 6 and 7
+                return seq == 2 || seq == 5 || (LeftSection ? seq < 2 || seq == 6 : seq > 2 && seq < 5 || seq == 7);
+            }
+            return true;
+        }
+
         private Dialogs _dialogs;
 
         // record activated count to prevent infinite actions
