@@ -699,7 +699,8 @@ namespace WindBot.Game.AI.Decks
             }
 
             if (p.SelfCost && Card.Location == CardLocation.MonsterZone && Duel.Player == 0
-                && Duel.Phase == DuelPhase.Main1 && Card.IsAttack() && !Card.Attacked && CanAttackWell(Card))
+                && Duel.Phase == DuelPhase.Main1 && Card.IsAttack() && !Card.Attacked && AI.InOwnSection(Card)
+                && CanAttackWell(Card))
                 return false;   // attack first, use the effect in Main Phase 2
 
             _lastActivated = Card;
@@ -930,7 +931,8 @@ namespace WindBot.Game.AI.Decks
             if (reusable)
             {
                 if (aim.StopsAttack && Duel.Player == 0 && Duel.Phase == DuelPhase.Main1 && Duel.Turn > 1
-                    && Card.Location == CardLocation.MonsterZone && Card.IsAttack() && !Card.Attacked)
+                    && Card.Location == CardLocation.MonsterZone && Card.IsAttack() && !Card.Attacked
+                    && AI.InOwnSection(Card))
                     return false;   // attack first, use it in Main Phase 2
                 return true;
             }
@@ -1536,10 +1538,12 @@ namespace WindBot.Game.AI.Decks
         //  - otherwise defend
         // When we still have a Battle Phase this turn, opposing monsters that our other
         // Attack Position monsters will beat first don't count (see LeftAfterOurAttacks).
+        // In split-zone tag duels only monsters in our own section can attack this turn.
         private bool SummonToAttack(int atk, int def, ClientCard self = null)
         {
             // Attacking only helps if we still get a Battle Phase this turn.
-            bool canAttackThisTurn = Duel.Player == 0 && Duel.Phase == DuelPhase.Main1 && Duel.Turn > 1;
+            bool canAttackThisTurn = Duel.Player == 0 && Duel.Phase == DuelPhase.Main1 && Duel.Turn > 1
+                && (self == null || AI.InOwnSection(self));
             List<ClientCard> theirs = canAttackThisTurn ? LeftAfterOurAttacks(self) : Enemy.GetMonsters();
             int strongest = theirs.Where(m => m.IsFaceup()).Select(m => m.Attack).DefaultIfEmpty(-1).Max();
             if (strongest <= atk)
@@ -1573,7 +1577,7 @@ namespace WindBot.Game.AI.Decks
         private List<ClientCard> LeftAfterOurAttacks(ClientCard self)
         {
             List<int> attackers = Bot.GetMonsters()
-                .Where(m => m != self && m.IsFaceup() && m.IsAttack() && !m.Attacked)
+                .Where(m => m != self && m.IsFaceup() && m.IsAttack() && !m.Attacked && AI.InOwnSection(m))
                 .Select(m => m.Attack)
                 .OrderBy(a => a)
                 .ToList();
