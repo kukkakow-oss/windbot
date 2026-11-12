@@ -104,7 +104,7 @@ namespace WindBot.Game.AI.Decks
             AddExecutor(ExecutorType.SpSummon, SmartSpSummon);
             AddExecutor(ExecutorType.Activate, ActivateGeneral);
             AddExecutor(ExecutorType.SummonOrSet, SmartSummon);
-            AddExecutor(ExecutorType.Repos, DefaultMonsterRepos);
+            AddExecutor(ExecutorType.Repos, SmartRepos);
             AddExecutor(ExecutorType.SpellSet, DefaultSpellSet);
         }
 
@@ -735,15 +735,91 @@ namespace WindBot.Game.AI.Decks
             return score;
         }
 
+        // What we assume an unidentified face-down monster's DEF to be: the bot only attacks
+        // one with a monster whose ATK is higher than this (see OnPreBattleBetween).
+        private const int UnknownFaceDownDefense = 1300;
+
         // True = Set it face-down instead of Normal Summoning it.
         public override bool OnSelectMonsterSummonOrSet(ClientCard card)
         {
             if (Is(card, CardType.Flip))
+                return true;   // FLIP effects need it face-down
+            return !SummonToAttack(Atk(card), Def(card));
+        }
+
+        // Attack Position (true) or defending (false), for a monster being summoned, Set or
+        // repositioned ("self" is the monster itself when it's already on the field):
+        //  - if none of the opponent's face-up monsters has more ATK than ours: attack
+        //  - if one does, but our DEF can stand up to their highest ATK: defend
+        //  - otherwise attack only if there's something we can beat this turn: a monster
+        //    whose ATK (in Attack Position) or DEF (in Defense Position) is lower than our
+        //    ATK, or a face-down monster when our ATK is high enough to risk it
+        //  - otherwise defend
+        // When we still have a Battle Phase this turn, opposing monsters that our other
+        // Attack Position monsters will beat first don't count (see LeftAfterOurAttacks).
+        private bool SummonToAttack(int atk, int def, ClientCard self = null)
+        {
+            // Attacking only helps if we still get a Battle Phase this turn.
+            bool canAttackThisTurn = Duel.Player == 0 && Duel.Phase == DuelPhase.Main1 && Duel.Turn > 1;
+            List<ClientCard> theirs = canAttackThisTurn ? LeftAfterOurAttacks(self) : Enemy.GetMonsters();
+            int strongest = theirs.Where(m => m.IsFaceup()).Select(m => m.Attack).DefaultIfEmpty(-1).Max();
+            if (strongest <= atk)
                 return true;
-            int enemyBest = Util.GetBestPower(Enemy);
-            if (enemyBest < 0)
-                return false;   // nothing to hit us back: attack
-            return Atk(card) < enemyBest;
+            if (def >= strongest)
+                return false;   // a tie in DEF also survives the attack
+            if (!canAttackThisTurn)
+                return false;
+            foreach (ClientCard monster in theirs)
+            {
+                if (atk > Toughness(monster))
+                    return true;
+            }
+            return false;
+        }
+
+        // What an attacker's ATK has to beat to destroy a monster in battle: its ATK in
+        // Attack Position, its DEF in Defense Position, or our guess for an unidentified
+        // face-down monster.
+        private static int Toughness(ClientCard monster)
+        {
+            if (monster.IsFacedown())
+                return monster.Id == 0 ? UnknownFaceDownDefense : monster.Defense;
+            return monster.GetDefensePower();
+        }
+
+        // The opponent's monsters still standing after our other Attack Position monsters
+        // (not "self") have each made their one attack this turn. The biggest threats go
+        // first, each beaten by the weakest of our monsters that can do it, so a 2600 clears
+        // a 2500 but can't also clear a 2400 next to it.
+        private List<ClientCard> LeftAfterOurAttacks(ClientCard self)
+        {
+            List<int> attackers = Bot.GetMonsters()
+                .Where(m => m != self && m.IsFaceup() && m.IsAttack() && !m.Attacked)
+                .Select(m => m.Attack)
+                .OrderBy(a => a)
+                .ToList();
+            List<ClientCard> left = new List<ClientCard>();
+            foreach (ClientCard monster in Enemy.GetMonsters().OrderByDescending(m => m.IsFaceup() ? m.Attack : -1))
+            {
+                int toughness = Toughness(monster);
+                int beatenBy = attackers.FindIndex(a => a > toughness);
+                if (beatenBy >= 0)
+                    attackers.RemoveAt(beatenBy);
+                else
+                    left.Add(monster);
+            }
+            return left;
+        }
+
+        // Changing a monster's battle position uses the same test, monster by monster.
+        private bool SmartRepos()
+        {
+            if (Card.IsFacedown() && Is(Card, CardType.Flip))
+                return DefaultMonsterRepos();   // flipping it face-up is how a FLIP effect triggers
+            if (Card.IsMonsterInvincible())
+                return Card.IsDefense();
+            bool attack = Atk(Card) > 0 && SummonToAttack(Atk(Card), Def(Card), Card);
+            return Card.IsAttack() ? !attack : attack;
         }
 
         public override CardPosition OnSelectPosition(int cardId, IList<CardPosition> positions)
@@ -758,11 +834,7 @@ namespace WindBot.Game.AI.Decks
             if (atk < 0)
                 wanted = CardPosition.FaceUpAttack;   // "?" ATK: usually set by an effect
             else
-            {
-                int enemyBest = Util.GetBestPower(Enemy);
-                bool canFight = enemyBest < 0 ? atk > 0 : atk >= enemyBest;
-                wanted = (canFight || atk >= def && atk >= 2000) ? CardPosition.FaceUpAttack : CardPosition.FaceUpDefence;
-            }
+                wanted = SummonToAttack(atk, Math.Max(0, def)) ? CardPosition.FaceUpAttack : CardPosition.FaceUpDefence;
             return positions.Contains(wanted) ? wanted : (CardPosition)0;
         }
 
@@ -774,8 +846,8 @@ namespace WindBot.Game.AI.Decks
         {
             if (!base.OnPreBattleBetween(attacker, defender))
                 return false;
-            if (defender.IsFacedown() && defender.Id == 0 && defender.RealPower < 1300)
-                defender.RealPower = 1300;
+            if (defender.IsFacedown() && defender.Id == 0 && defender.RealPower < UnknownFaceDownDefense)
+                defender.RealPower = UnknownFaceDownDefense;
             return true;
         }
 
