@@ -22,8 +22,9 @@ namespace WindBot.Game.AI.Decks
     // that to decide when a card is worth playing and what to aim it at:
     //  - card draw and searches first, then summons, then everything else
     //  - field wipes only when the opponent would lose more than we would
-    //  - removal that picks out cards one at a time only when the opponent has a card
-    //    it can hit (otherwise it would have to hit one of ours)
+    //  - removal that picks out cards one at a time aims at the opponent's cards; it
+    //    only hits our own when that card gains from it, or to save our card from (or
+    //    spoil) an opponent's effect aimed at it (see "Removal aimed at single cards")
     //  - set Spells/Traps are kept for the opponent's turn (their summons, attacks,
     //    or End Phase) unless they help us right now
     //  - negation only against the opponent, never against our own plays
@@ -37,10 +38,8 @@ namespace WindBot.Game.AI.Decks
         public SmartExecutor(GameAI ai, Duel duel)
             : base(ai, duel)
         {
-            // Card-specific logic WindBot already has for common staples.
-            AddExecutor(ExecutorType.Activate, _CardId.MysticalSpaceTyphoon, DefaultMysticalSpaceTyphoon);
-            AddExecutor(ExecutorType.Activate, _CardId.CosmicCyclone, DefaultCosmicCyclone);
-            AddExecutor(ExecutorType.Activate, _CardId.GalaxyCyclone, DefaultGalaxyCyclone);
+            // Card-specific logic WindBot already has for common staples. (Mystical Space
+            // Typhoon, Cosmic Cyclone and Galaxy Cyclone use our own removal rules instead.)
             AddExecutor(ExecutorType.Activate, _CardId.BookOfMoon, DefaultBookOfMoon);
             AddExecutor(ExecutorType.Activate, _CardId.CompulsoryEvacuationDevice, DefaultCompulsoryEvacuationDevice);
             AddExecutor(ExecutorType.Activate, _CardId.CallOfTheHaunted, DefaultCallOfTheHaunted);
@@ -149,16 +148,40 @@ namespace WindBot.Game.AI.Decks
         private static readonly Regex DebuffRx = new Regex(@"loses? (\d+|atk)|cannot attack|cannot declare an attack|face-down defense position|take control|gain control", Rx);
         private static readonly Regex SelfCostRx = new Regex(@"\b(tribute|send|banish) this card( from the field)?\b[^.;]*;", Rx);
 
+        // How a removal effect gets rid of a card.
+        private enum RemovalKind { Other, Destroy, Banish, ToHand, ToDeck, ToGrave }
+
         // What a removal effect that picks out cards one at a time can reach.
         private class Aim
         {
             public bool Monsters, Spells, Hand, Grave;
             public bool FaceUpOnly, FaceDownOnly;
-            public bool Targets;   // "target": protected cards don't count
+            public bool Targets;        // "target": protected cards don't count
+            public bool EitherSide;     // "on the field": it can also hit our own cards
+            public bool OwnRequired;    // "1 monster you control and 1 ...": it hits one of ours anyway
+            public int MinTargets = 1;  // "Target 2 cards": 2 ("up to 2": 1)
+            public RemovalKind Kind;    // destroy, banish, return to the hand...
+            public bool FollowUp;       // more happens after the removal ("then", "and if you do")
+            public bool Temporary;      // banished only until it comes back ("until the End Phase")
+            public bool StopsAttack;    // "this card cannot attack" the turn it's used
         }
 
         private static readonly Regex AimVerbRx = new Regex(@"\b(destroy|banish|return|shuffle|send|negate|change|place|take control|gain control)\b", Rx);
-        private static readonly Regex AimObjectRx = new Regex(@"\b(\d+|a|an|one|two|three|up to \w+)\s+((face-up|face-down|set|attack position|defense position|other|effect)\s+)*(spell/traps?|spells?/traps?|spell or trap|monsters?|cards?|spells?|traps?)( cards?)?\b[^.;]*?\b(on the field|your opponent controls|they control|your opponent's field)", Rx);
+        private static readonly Regex AimObjectRx = new Regex(@"\b(?<n>\d+|a|an|one|two|three|up to \w+)\s+((face-up|face-down|set|attack position|defense position|other|effect)\s+)*(spell/traps?|spells?/traps?|spell or trap|monsters?|cards?|spells?|traps?)( cards?)?\b[^.;:]*?\b(?<side>on the field|your opponent controls|they control|your opponent's field)", Rx);
+        private static readonly Regex AllWordRx = new Regex(@"\ball\b", Rx);
+        private static readonly Regex FollowUpRx = new Regex(@"\bthen\b|\bif you do\b|\bafter that\b", Rx);
+        private static readonly Regex TemporaryRx = new Regex(@"\buntil the (end|standby) phase\b|\breturn (it|them|that (card|monster|target)|those (cards|monsters)) to the field\b", Rx);
+        private static readonly Regex StopsAttackRx = new Regex(@"\bthis card cannot (attack|declare an attack)\b", Rx);
+        private static readonly Regex ClauseSplitRx = new Regex(@",|\bthen\b|\band if you do\b|\balso\b", Rx);
+        private static readonly Regex TargetRefRx = new Regex(@"\b(it|them|that target|those targets|that card|that monster|those cards|those monsters|the target|the targets)\b", Rx);
+        private static readonly KeyValuePair<Regex, RemovalKind>[] KindVerbs =
+        {
+            new KeyValuePair<Regex, RemovalKind>(new Regex(@"\bdestroy", Rx), RemovalKind.Destroy),
+            new KeyValuePair<Regex, RemovalKind>(new Regex(@"\bbanish", Rx), RemovalKind.Banish),
+            new KeyValuePair<Regex, RemovalKind>(new Regex(@"\breturn\b[^.;]*?\bto the hand\b|\bto (its|their|the) owner('s|s'|s)? hands?\b", Rx), RemovalKind.ToHand),
+            new KeyValuePair<Regex, RemovalKind>(new Regex(@"\b(shuffle|return)\b[^.;]*?\bdeck\b|\bplace\b[^.;]*?\b(top|bottom) of the deck\b", Rx), RemovalKind.ToDeck),
+            new KeyValuePair<Regex, RemovalKind>(new Regex(@"\bsend\b[^.;]*?\b(gy|graveyard)\b", Rx), RemovalKind.ToGrave),
+        };
         private static readonly Regex AimOpponentRx = new Regex(@"your opponent's\s+((face-up|face-down|set)\s+)?(spell/traps?|monsters?|cards?|spells?|traps?|hand|gy|graveyard)", Rx);
         private static readonly Regex HandWordRx = new Regex(@"\bhand\b", Rx);
         private static readonly Regex GraveWordRx = new Regex(@"\b(gy|graveyard)\b", Rx);
@@ -256,7 +279,7 @@ namespace WindBot.Game.AI.Decks
             return p;
         }
 
-        // Reads which of the opponent's cards a "pick 1 card" removal effect can reach, e.g.
+        // Reads which cards a "pick 1 card" removal effect can reach, e.g.
         // "Target 1 Spell/Trap on the field; destroy it". Null if the text has none.
         private static Aim ReadAim(string description)
         {
@@ -264,8 +287,11 @@ namespace WindBot.Game.AI.Decks
                 return null;
             string text = description.Replace('\r', ' ').Replace('\n', ' ');
             Aim aim = null;
-            foreach (string sentence in text.Split('.'))
+            bool kindRead = false;
+            string[] sentences = text.Split('.');
+            for (int s = 0; s < sentences.Length; ++s)
             {
+                string sentence = sentences[s];
                 if (!AimVerbRx.IsMatch(sentence))
                     continue;
                 List<Match> phrases = AimObjectRx.Matches(sentence).Cast<Match>()
@@ -273,6 +299,8 @@ namespace WindBot.Game.AI.Decks
                 foreach (Match phrase in phrases)
                 {
                     string words = phrase.Value.ToLowerInvariant();
+                    if (AllWordRx.IsMatch(words))
+                        continue;   // "destroy all monsters on the field": a mass effect, not a pick
                     if (aim == null)
                         aim = new Aim();
                     bool zoneNamed = false;
@@ -307,8 +335,33 @@ namespace WindBot.Game.AI.Decks
                         aim.FaceDownOnly = true;
                     if (sentence.IndexOf("target", StringComparison.OrdinalIgnoreCase) >= 0)
                         aim.Targets = true;
+
+                    Group side = phrase.Groups["side"];
+                    if (side.Success && side.Value.Equals("on the field", StringComparison.OrdinalIgnoreCase))
+                        aim.EitherSide = true;
+                    if (words.Contains("you control"))
+                        aim.OwnRequired = true;
+                    Group count = phrase.Groups["n"];
+                    if (count.Success)
+                        aim.MinTargets = Math.Max(aim.MinTargets, CountWord(count.Value));
+
+                    // What happens to the card: the part after the ";" ("Target 1 card; destroy it").
+                    int semicolon = sentence.IndexOf(';');
+                    string action = semicolon >= 0 ? sentence.Substring(semicolon + 1) : sentence;
+                    if (!kindRead)
+                    {
+                        aim.Kind = KindOf(action);
+                        kindRead = true;
+                    }
+                    if (FollowUpRx.IsMatch(action))
+                        aim.FollowUp = true;
+                    string next = s + 1 < sentences.Length ? sentences[s + 1] : "";
+                    if (TemporaryRx.IsMatch(sentence) || TemporaryRx.IsMatch(next))
+                        aim.Temporary = true;
                 }
             }
+            if (aim != null && StopsAttackRx.IsMatch(text))
+                aim.StopsAttack = true;
             if (aim != null && aim.FaceUpOnly && aim.FaceDownOnly)
             {
                 aim.FaceUpOnly = false;   // different phrases disagree: don't restrict
@@ -320,6 +373,129 @@ namespace WindBot.Game.AI.Decks
         private static bool HasSeveralEffects(string text)
         {
             return text.Contains("(2)") || text.Contains("\u25CF") || YouCanRx.Matches(text).Count >= 2;
+        }
+
+        private static int CountWord(string word)
+        {
+            string w = word.Trim().ToLowerInvariant();
+            if (w.StartsWith("up to"))
+                return 1;
+            int n;
+            if (int.TryParse(w, out n))
+                return Math.Max(1, n);
+            if (w == "two")
+                return 2;
+            if (w == "three")
+                return 3;
+            return 1;
+        }
+
+        // How the picked card is got rid of. Looks first at the verb next to "it", "that
+        // target"... ("send 1 card from your hand to the GY, and if you do, return that
+        // target to the hand" returns the target to the hand).
+        private static RemovalKind KindOf(string action)
+        {
+            foreach (string clause in ClauseSplitRx.Split(action))
+            {
+                if (!TargetRefRx.IsMatch(clause))
+                    continue;
+                RemovalKind kind = FirstKind(clause);
+                if (kind != RemovalKind.Other)
+                    return kind;
+            }
+            return FirstKind(action);
+        }
+
+        private static RemovalKind FirstKind(string text)
+        {
+            RemovalKind kind = RemovalKind.Other;
+            int first = int.MaxValue;
+            foreach (KeyValuePair<Regex, RemovalKind> verb in KindVerbs)
+            {
+                Match m = verb.Key.Match(text);
+                if (m.Success && m.Index < first)
+                {
+                    first = m.Index;
+                    kind = verb.Value;
+                }
+            }
+            return kind;
+        }
+
+        // Finding which of a card's effects is being used, from the effect's name in the
+        // database ("Banish", "Destroy a Set Spell/Trap"): the part of the card text that
+        // shares the most words with it. Words in what the effect does (after its ":" or
+        // ";") count double.
+        private static readonly Regex EffectSplitRx = new Regex(@"\u25CF|\(\d+\)|\[ ?(?:Pendulum|Monster) Effect ?\]|-{5,}", Rx);
+        private static readonly Regex LetterWordRx = new Regex(@"[a-z]+", RegexOptions.CultureInvariant);
+        private static readonly HashSet<string> LabelStopWords = new HashSet<string>
+        {
+            "the", "a", "an", "of", "to", "and", "or", "this", "that", "card", "cards", "your", "from", "with",
+            "for", "its", "it", "in", "on", "by", "you", "use", "effect", "effects", "activate", "up"
+        };
+
+        private static List<string> SplitEffects(string text)
+        {
+            string t = text.Replace('\r', ' ').Replace('\n', ' ');
+            List<string> parts = EffectSplitRx.Split(t).Select(part => part.Trim()).Where(part => part.Length > 10).ToList();
+            if (parts.Count <= 1)
+                parts = t.Split('.').Select(part => part.Trim()).Where(part => part.Length > 10).ToList();
+            return parts;
+        }
+
+        private static string Stem(string word)
+        {
+            foreach (string suffix in new[] { "ing", "ed", "es", "s" })
+            {
+                if (word.EndsWith(suffix) && word.Length - suffix.Length >= 4)
+                    return word.Substring(0, word.Length - suffix.Length);
+            }
+            return word;
+        }
+
+        // The part of the text that the effect name is about, or null if no single part fits best.
+        private static string MatchEffect(string text, string label)
+        {
+            if (string.IsNullOrEmpty(text) || string.IsNullOrEmpty(label))
+                return null;
+            List<string> words = LetterWordRx.Matches(label.ToLowerInvariant()).Cast<Match>()
+                .Select(m => m.Value)
+                .Where(w => w.Length >= 3 && !LabelStopWords.Contains(w))
+                .Select(w => Stem(w))
+                .Distinct().ToList();
+            if (words.Count == 0)
+                return null;
+            List<Regex> finders = words.Select(w => new Regex(@"\b" + Regex.Escape(w), RegexOptions.CultureInvariant)).ToList();
+            string best = null;
+            int bestScore = 0;
+            bool tie = false;
+            foreach (string part in SplitEffects(text))
+            {
+                string lower = part.ToLowerInvariant();
+                int cut = lower.IndexOf(';');
+                if (cut < 0)
+                    cut = lower.IndexOf(':');
+                string action = cut >= 0 ? lower.Substring(cut + 1) : "";
+                int score = 0;
+                foreach (Regex finder in finders)
+                {
+                    if (finder.IsMatch(action))
+                        score += 2;
+                    else if (finder.IsMatch(lower))
+                        score += 1;
+                }
+                if (score > bestScore)
+                {
+                    best = part;
+                    bestScore = score;
+                    tie = false;
+                }
+                else if (score == bestScore && score > 0)
+                {
+                    tie = true;
+                }
+            }
+            return tie || bestScore == 0 ? null : best;
         }
 
         // -----------------------------------------------------------------------------
@@ -489,10 +665,11 @@ namespace WindBot.Game.AI.Decks
             if (p.MassOpponent && !OpponentHasCardsFor(p))
                 return false;
 
-            // Removal that picks out cards one at a time: only worth it if the opponent has
-            // something it can hit. Otherwise the only legal targets are our own cards.
-            Aim aim = AimOfActivation();
-            if (aim != null && !OpponentHasTargetFor(aim))
+            // Removal that picks out cards one at a time: see "Removal aimed at single cards".
+            bool aimKnown;
+            Aim aim = AimOfActivation(out aimKnown);
+            RemovalPlan plan = null;
+            if (aim != null && !PlanRemoval(aim, aimKnown, p, out plan))
                 return false;
 
             if (facedownSpellTrap && !GoodTimeForSetCard(p))
@@ -526,6 +703,7 @@ namespace WindBot.Game.AI.Decks
                 return false;   // attack first, use the effect in Main Phase 2
 
             _lastActivated = Card;
+            _plan = plan;
             return true;
         }
 
@@ -586,60 +764,656 @@ namespace WindBot.Game.AI.Decks
             return p.MassSpells && Enemy.GetSpells().Count > 0;
         }
 
-        // What the effect being activated can hit, if it's "pick 1 card" removal. Null when it
-        // isn't, or when the card has several effects and we can't tell which one this is.
-        private Aim AimOfActivation()
+        // What the effect being activated can hit, if it's "pick 1 card" removal (null if it
+        // isn't). known = false when the card has several effects and we can't tell which one
+        // this is; the result then covers all of them.
+        private static readonly Dictionary<int, Aim> PartAims = new Dictionary<int, Aim>();
+        private static readonly HashSet<int> UnmatchedEffects = new HashSet<int>();
+
+        private Aim AimOfActivation(out bool known)
         {
-            int desc = ActivateDescription;
-            int code = desc > 0 ? desc >> 4 : 0;
-            if (code > 0 && (code == Card.Id || code == Card.Alias))
-            {
-                // The effect's own description, when the card has one.
-                Aim fromEffect;
-                lock (Profiles)
-                {
-                    if (!EffectAims.TryGetValue(desc, out fromEffect))
-                    {
-                        fromEffect = ReadAim(OptionText(desc));
-                        EffectAims[desc] = fromEffect;
-                    }
-                }
-                if (fromEffect != null)
-                    return fromEffect;
-            }
+            known = true;
             if (Card.Data == null || string.IsNullOrEmpty(Card.Data.Description))
                 return null;
+            string text = Card.Data.Description;
+            int desc = ActivateDescription;
+            int code = desc > 0 ? desc >> 4 : 0;
+            bool named = code > 0 && (code == Card.Id || code == Card.Alias);
+            bool several = HasSeveralEffects(text);
+
+            // Several effects: the part of the text the effect's name points to.
+            if (several && named)
+            {
+                Aim part = null;
+                bool found;
+                lock (Profiles)
+                {
+                    found = PartAims.TryGetValue(desc, out part);
+                    if (!found && !UnmatchedEffects.Contains(desc))
+                    {
+                        string matched = MatchEffect(text, OptionText(desc));
+                        if (matched != null)
+                        {
+                            part = ReadAim(matched);
+                            PartAims[desc] = part;
+                            found = true;
+                        }
+                        else
+                        {
+                            UnmatchedEffects.Add(desc);
+                        }
+                    }
+                }
+                if (found)
+                    return part;
+            }
+
+            // The effect's name itself, when it says it all ("Destroy 1 card on the field").
+            if (named)
+            {
+                Aim fromName;
+                lock (Profiles)
+                {
+                    if (!EffectAims.TryGetValue(desc, out fromName))
+                    {
+                        fromName = ReadAim(OptionText(desc));
+                        EffectAims[desc] = fromName;
+                    }
+                }
+                if (fromName != null)
+                    return fromName;
+            }
+
+            Aim whole;
+            lock (Profiles)
+            {
+                if (!CardAims.TryGetValue(Card.Id, out whole))
+                {
+                    whole = ReadAim(text);
+                    CardAims[Card.Id] = whole;
+                }
+            }
             // Activating a Spell/Trap card uses its main text; otherwise only trust the
             // whole text when the card has a single effect.
             bool activatingSpellTrap = (Is(Card, CardType.Spell) || Is(Card, CardType.Trap))
                 && (Card.Location == CardLocation.Hand || Card.Location == CardLocation.SpellZone && Card.IsFacedown());
-            if (!activatingSpellTrap && HasSeveralEffects(Card.Data.Description))
-                return null;
-            Aim fromCard;
-            lock (Profiles)
-            {
-                if (!CardAims.TryGetValue(Card.Id, out fromCard))
-                {
-                    fromCard = ReadAim(Card.Data.Description);
-                    CardAims[Card.Id] = fromCard;
-                }
-            }
-            return fromCard;
+            if (several && !activatingSpellTrap)
+                known = false;
+            return whole;
         }
 
-        private bool OpponentHasTargetFor(Aim aim)
+        // -----------------------------------------------------------------------------
+        // Removal aimed at single cards ("Target 1 card on the field; destroy it").
+        //
+        // Many of these can hit either side of the field. The bot aims them at the opponent's
+        // cards, and only at its own cards when:
+        //  (2) the opponent's effect is aimed at our card, and removing it ourselves first is
+        //      better: it saves the card (we return it to the hand, or banish it only until
+        //      the End Phase), it stops them taking control of it, it spoils a follow-up that
+        //      needs the card gone ("destroy it, and if you do, draw 1 card"; "both"), or our
+        //      removal sets off the card's own effect and theirs wouldn't;
+        //  (1) the opponent has nothing it can hit, and our card gains from being removed that
+        //      way ("If this card is sent to the GY: ..."). Spells/Traps and other one-shot
+        //      cards wait until the opponent's End Phase in case they set something; effects
+        //      that can be used again don't wait, but an effect that stops the monster
+        //      attacking waits for Main Phase 2.
+        // Priority: (2), then the opponent's most threatening card, then (1).
+        // The opponent's cards that gain from being removed a certain way ("If this card is
+        // destroyed: ...") are picked after their other cards when we remove them that way.
+
+        // How much less we want to hit an opponent's card whose own effect it would set off.
+        private const int SetsOffEffectPenalty = 1000;
+
+        private class RemovalPlan
         {
-            Func<ClientCard, bool> fits = c => c != null
-                && (!aim.FaceUpOnly || c.IsFaceup())
-                && (!aim.FaceDownOnly || c.IsFacedown())
-                && (!aim.Targets || !c.IsShouldNotBeTarget());
-            if (aim.Monsters && Enemy.GetMonsters().Any(fits))
+            public int SourceId;
+            public RemovalKind Kind;
+            public List<ClientCard> Own = new List<ClientCard>();  // our cards it may hit, best first
+            public bool Response;   // rule (2): hit Own first
+        }
+
+        private RemovalPlan _plan;
+
+        // Whether a removal effect is worth using now, and which of our own cards it may hit.
+        private bool PlanRemoval(Aim aim, bool known, Profile p, out RemovalPlan plan)
+        {
+            plan = new RemovalPlan { SourceId = Card.Id, Kind = aim.Kind };
+            int sourceType = SourceType();
+            int theirs = 0;
+            if (aim.Monsters)
+                theirs += Enemy.GetMonsters().Count(c => CanAim(aim, c, sourceType));
+            if (aim.Spells)
+                theirs += Enemy.GetSpells().Count(c => CanAim(aim, c, sourceType));
+            if (aim.Hand)
+                theirs += Enemy.Hand.Count;
+            if (aim.Grave)
+                theirs += Enemy.Graveyard.Count;
+
+            // Only the opponent's cards (or we can't tell which effect this is): only when
+            // they have something it can hit.
+            if (!known || !aim.EitherSide || aim.OwnRequired)
+                return theirs > 0;
+
+            // (2) Answering the opponent's effect aimed at one of our cards.
+            if (Duel.CurrentChain.Count > 0 && Duel.LastChainPlayer == 1)
+            {
+                ClientCard ours = ResponseTarget(aim, sourceType);
+                if (ours != null && theirs + 1 >= aim.MinTargets)
+                {
+                    plan.Own.Add(ours);
+                    plan.Response = true;
+                    return true;
+                }
+            }
+
+            // The opponent's cards.
+            if (theirs >= aim.MinTargets)
                 return true;
-            if (aim.Spells && Enemy.GetSpells().Any(fits))
+
+            // (1) Our own cards that gain from being removed this way.
+            if (!GoodTimeToHitOwnCard(aim, p))
+                return false;
+            bool missesTiming = Duel.CurrentChain.Count > 0 || aim.FollowUp;
+            List<ClientCard> gainers = Bot.GetMonsters().Concat(Bot.GetSpells())
+                .Where(c => c != Card && CanAim(aim, c, sourceType) && SetsOffOwnEffect(c, aim.Kind, true, missesTiming))
+                .OrderBy(c => Value(c)).ToList();
+            if (gainers.Count == 0 || theirs + gainers.Count < aim.MinTargets)
+                return false;
+            plan.Own = gainers;
+            return true;
+        }
+
+        private bool GoodTimeToHitOwnCard(Aim aim, Profile p)
+        {
+            bool reusable = Card.IsFaceup() && !p.SelfCost
+                && (Card.Location == CardLocation.MonsterZone || Card.Location == CardLocation.SpellZone);
+            if (reusable)
+            {
+                if (aim.StopsAttack && Duel.Player == 0 && Duel.Phase == DuelPhase.Main1 && Duel.Turn > 1
+                    && Card.Location == CardLocation.MonsterZone && Card.IsAttack() && !Card.Attacked)
+                    return false;   // attack first, use it in Main Phase 2
                 return true;
-            if (aim.Hand && Enemy.Hand.Count > 0)
+            }
+            // A one-shot card: keep it in case the opponent sets something better to hit.
+            return Duel.Player == 1 && Duel.Phase == DuelPhase.End && Duel.CurrentChain.Count == 0;
+        }
+
+        // The kind of card the activated effect comes from, for "cannot be targeted by
+        // Spell/Trap effects" and the like.
+        private int SourceType()
+        {
+            if (Is(Card, CardType.Pendulum) && Card.Location == CardLocation.SpellZone)
+                return (int)CardType.Spell;   // a Pendulum Effect
+            if (Is(Card, CardType.Monster))
+                return (int)CardType.Monster;
+            if (Is(Card, CardType.Trap))
+                return (int)CardType.Trap;
+            return (int)CardType.Spell;
+        }
+
+        // Whether the effect can reach this card and actually do something to it.
+        private bool CanAim(Aim aim, ClientCard card, int sourceType)
+        {
+            if (card == null)
+                return false;
+            bool zone = aim.Monsters && card.Location == CardLocation.MonsterZone
+                || aim.Spells && card.Location == CardLocation.SpellZone;
+            if (!zone)
+                return false;
+            if (aim.FaceUpOnly && !card.IsFaceup())
+                return false;
+            if (aim.FaceDownOnly && !card.IsFacedown())
+                return false;
+            return !Shielded(card, aim.Targets, aim.Kind, sourceType);
+        }
+
+        // Rule (2): the opponent's effect at the end of the chain is aimed at one of our
+        // cards, and removing that card ourselves first is better. Returns that card, or null.
+        private ClientCard ResponseTarget(Aim aim, int sourceType)
+        {
+            if (Duel.CurrentChainInfo.Count == 0)
+                return null;
+            ChainInfo last = Duel.CurrentChainInfo[Duel.CurrentChainInfo.Count - 1];
+            if (last.ActivatePlayer != 1)
+                return null;
+            List<ClientCard> aimedAtUs = last.Targets
+                .Where(c => c != null && c.Controller == 0 && c != Card && CanAim(aim, c, sourceType))
+                .OrderByDescending(c => Value(c)).ToList();
+            if (aimedAtUs.Count == 0)
+                return null;
+            string text = EffectTextOf(last);
+            if (text == null)
+                return null;
+            TheirEffect theirs = ReadTheirEffect(text);
+            bool removes = theirs.Kind != RemovalKind.Other;
+            if (!removes && !theirs.TakesControl)
+                return null;   // not taking the card away from us (e.g. negating it)
+
+            foreach (ClientCard card in aimedAtUs)
+            {
+                // Saving it: back to our hand, or banished only until it comes back.
+                bool losesIt = theirs.TakesControl || removes && theirs.Kind != RemovalKind.ToHand;
+                if (losesIt && aim.Kind == RemovalKind.ToHand && !Is(card, CardType.Token) && !IsExtra(card))
+                    return card;
+                if (losesIt && aim.Kind == RemovalKind.Banish && aim.Temporary && !Is(card, CardType.Token))
+                    return card;
+                // Stopping them from taking it, or from getting their follow-up.
+                if (theirs.TakesControl)
+                    return card;
+                if (theirs.NeedsEveryTarget || theirs.FollowUpNeedsRemoval && last.Targets.Count == 1)
+                    return card;
+                // Our way of removing it sets off its effect, and theirs wouldn't.
+                if (SetsOffOwnEffect(card, aim.Kind, true, true) && !SetsOffOwnEffect(card, theirs.Kind, false, false))
+                    return card;
+            }
+            return null;
+        }
+
+        // -----------------------------------------------------------------------------
+        // Cards whose own effect goes off when they're removed ("If this card is sent to the
+        // GY: ...", "If this card is destroyed: ...", "If this card leaves the field: ...").
+
+        private class Trigger
+        {
+            public bool Destroyed, ToGrave, Banished, LeavesField, ToHand, ToDeck;
+            public bool OpponentOnly;   // "by your opponent's card effect": not when we do it ourselves
+            public bool NeedsGrave;     // "destroyed and sent to the GY" (destroyed Pendulum Monsters go to the Extra Deck)
+            public bool OptionalWhen;   // "When ...: You can": misses the timing if something else happens after
+        }
+
+        private const string ThisCardPattern = @"(?<!while )\bthis ([\w-]+ ){0,3}card\b";
+        private static readonly Regex DestroyedEventRx = new Regex(ThisCardPattern + @"[^:,]{0,60}?\b(is|was)\b(?<span>[^:]{0,40}?)\bdestroyed\b", Rx);
+        private static readonly Regex GraveEventRx = new Regex(ThisCardPattern + @"[^:,]{0,60}?\b(is|was)\b(?<span>[^:]{0,40}?)\bsent\b[^:]{0,40}?\b(gy|graveyard)\b", Rx);
+        private static readonly Regex BanishedEventRx = new Regex(ThisCardPattern + @"[^:,]{0,60}?\b(is|was)\b(?<span>[^:]{0,40}?)\bbanished\b", Rx);
+        private static readonly Regex LeavesEventRx = new Regex(ThisCardPattern + @"(?<span>[^:,]{0,60}?)\bleaves the field\b", Rx);
+        private static readonly Regex ToHandEventRx = new Regex(ThisCardPattern + @"[^:,]{0,60}?\b(is|was)\b(?<span>[^:]{0,40}?)\breturned to (the|your|its owner's) hand\b", Rx);
+        private static readonly Regex ToDeckEventRx = new Regex(ThisCardPattern + @"[^:,]{0,60}?\b(is|was)\b(?<span>[^:]{0,40}?)\b(returned|shuffled) (in)?to the deck\b", Rx);
+        private static readonly Regex IfWhenRx = new Regex(@"\b(if|when)\b", Rx);
+        private static readonly Regex BattleWordRx = new Regex(@"\bbattle\b", Rx);
+        private static readonly Regex EffectWordRx = new Regex(@"\beffects?\b", Rx);
+        private static readonly Regex OpponentWordRx = new Regex(@"\bopponent", Rx);
+        private static readonly Regex NotRemovalRx = new Regex(@"\bmaterials?\b|\btributed\b|\bdiscarded\b|\bas (a )?cost\b|\bfor (a|the) [\w\s-]*summon\b|\bexcavated\b|\bdetached\b|\bto activate\b|\bbecause\b|""", Rx);
+        private static readonly Regex FromZoneRx = new Regex(@"\bfrom (the |your |its owner's |their )?(hand|deck|gy|graveyard|extra deck|main deck)\b", Rx);
+        private static readonly Regex FieldWordRx = new Regex(@"\bfield\b", Rx);
+        private static readonly Regex SpanBreakRx = new Regex(@"\band\b|,|\bor\b(?! card effect)", Rx);
+        private static readonly Regex DestroyedAndSentRx = new Regex(@"\bdestroyed\b[^:]*\band sent to\b", Rx);
+        private static readonly Regex BadPayoffRx = new Regex(@"\b(destroy|banish|tribute)\b[^.]*\b(equipped monster|that monster|that target|you control)\b|\byou (lose|take)\b|damage to you\b|\byour opponent (draws|gains|adds|special summons)\b", Rx);
+        private static readonly Regex YouCanStartRx = new Regex(@"^\s*you can\b", Rx);
+        private static readonly Regex LeadingNumberRx = new Regex(@"^\(\d+\)\s*", Rx);
+
+        private static readonly Dictionary<int, List<Trigger>> TriggersById = new Dictionary<int, List<Trigger>>();
+
+        private static List<Trigger> TriggersOf(int id)
+        {
+            lock (Profiles)
+            {
+                List<Trigger> list;
+                if (!TriggersById.TryGetValue(id, out list))
+                {
+                    NamedCard data = NamedCard.Get(id);
+                    list = data == null ? new List<Trigger>() : ReadTriggers(data.Description);
+                    TriggersById[id] = list;
+                }
+                return list;
+            }
+        }
+
+        private static List<Trigger> ReadTriggers(string description)
+        {
+            List<Trigger> list = new List<Trigger>();
+            if (string.IsNullOrEmpty(description))
+                return list;
+            string t = description.Replace("\r\n", "\n").Replace('\r', '\n');
+            for (int i = t.IndexOf(':'); i >= 0; i = t.IndexOf(':', i + 1))
+            {
+                // The condition before the ":" and what happens after it.
+                int start = Math.Max(Math.Max(t.LastIndexOf('.', i), t.LastIndexOf('\u25CF', i)),
+                                     Math.Max(t.LastIndexOf(']', i), t.LastIndexOf('\n', i))) + 1;
+                string condition = LeadingNumberRx.Replace(t.Substring(start, i - start).Trim(), "");
+                int end = t.Length;
+                foreach (char boundary in new[] { '.', '\u25CF', '\n' })
+                {
+                    int j = t.IndexOf(boundary, i + 1);
+                    if (j >= 0 && j < end)
+                        end = j;
+                }
+                string payoff = t.Substring(i + 1, end - i - 1);
+                if (!IfWhenRx.IsMatch(condition))
+                    continue;
+
+                Trigger trigger = new Trigger
+                {
+                    Destroyed = HasEvent(DestroyedEventRx, condition),
+                    ToGrave = HasEvent(GraveEventRx, condition),
+                    Banished = HasEvent(BanishedEventRx, condition),
+                    LeavesField = HasEvent(LeavesEventRx, condition),
+                    ToHand = HasEvent(ToHandEventRx, condition),
+                    ToDeck = HasEvent(ToDeckEventRx, condition),
+                };
+                if (!(trigger.Destroyed || trigger.ToGrave || trigger.Banished || trigger.LeavesField || trigger.ToHand || trigger.ToDeck))
+                    continue;
+                if (NotRemovalRx.IsMatch(condition))
+                    continue;   // used as material, Tributed, discarded, as a cost...
+                if (BattleWordRx.IsMatch(condition) && !EffectWordRx.IsMatch(condition))
+                    continue;   // only when destroyed by battle
+                if (FromZoneRx.IsMatch(condition) && !FieldWordRx.IsMatch(condition))
+                    continue;   // only from the hand, Deck or GY
+                if (BadPayoffRx.IsMatch(payoff))
+                    continue;   // e.g. "destroy the equipped monster": hurts its owner
+                trigger.OpponentOnly = OpponentWordRx.IsMatch(condition);
+                trigger.NeedsGrave = trigger.Destroyed && DestroyedAndSentRx.IsMatch(condition);
+                trigger.OptionalWhen = condition.TrimStart('(', ' ').StartsWith("when", StringComparison.OrdinalIgnoreCase)
+                    && YouCanStartRx.IsMatch(payoff);
+                list.Add(trigger);
+            }
+            return list;
+        }
+
+        private static bool HasEvent(Regex rx, string condition)
+        {
+            Match m = rx.Match(condition);
+            return m.Success && !SpanBreakRx.IsMatch(m.Groups["span"].Value);
+        }
+
+        // True if removing this card that way sets off one of its own effects. ours: we're the
+        // ones removing our own card (effects that need the opponent to do it don't count).
+        // missesTiming: something else happens after the removal, so "When ...: You can"
+        // effects miss their timing.
+        private static bool SetsOffOwnEffect(ClientCard card, RemovalKind kind, bool ours, bool missesTiming)
+        {
+            if (card == null || kind == RemovalKind.Other || !Known(card) || Is(card, CardType.Token))
+                return false;
+            bool pendulum = Is(card, CardType.Pendulum);
+            foreach (Trigger t in TriggersOf(card.Id))
+            {
+                if (ours && t.OpponentOnly)
+                    continue;
+                if (missesTiming && t.OptionalWhen)
+                    continue;
+                switch (kind)
+                {
+                    case RemovalKind.Destroy:
+                        if (t.LeavesField || t.Destroyed && !(pendulum && t.NeedsGrave) || t.ToGrave && !pendulum)
+                            return true;
+                        break;
+                    case RemovalKind.Banish:
+                        if (t.Banished || t.LeavesField)
+                            return true;
+                        break;
+                    case RemovalKind.ToHand:
+                        if (t.ToHand || t.LeavesField)
+                            return true;
+                        break;
+                    case RemovalKind.ToDeck:
+                        if (t.ToDeck || t.LeavesField)
+                            return true;
+                        break;
+                    case RemovalKind.ToGrave:
+                        if (t.ToGrave || t.LeavesField)
+                            return true;
+                        break;
+                }
+            }
+            return false;
+        }
+
+        // -----------------------------------------------------------------------------
+        // Protection read from card text: "cannot be targeted by card effects", "unaffected by
+        // other cards' effects", "cannot be destroyed by card effects", for the card itself or
+        // for others ("monsters you control...", "the equipped monster..."). Conditions
+        // ("while it has material") are ignored, so this errs on the side of "protected".
+
+        private enum ProtectionKind { Untargetable, Unaffected, Indestructible }
+        private enum ProtectionScope { Self, Equipped, Monsters, SpellTraps, Cards }
+
+        private class Protection
+        {
+            public ProtectionKind Kind;
+            public int From;             // CardType bits of the effects it stops (Monster, Spell, Trap)
+            public bool OpponentOnly;    // only against the opponent's effects
+            public ProtectionScope Scope;
+            public string Archetype;     // "\"X\" monsters you control": only cards with X in their name
+            public bool OthersOnly;      // "other monsters you control"
+        }
+
+        private static readonly Regex UntargetableRx = new Regex(@"(?<subj>[^.:;\u25CF\n]*?)\bcannot be targeted\b(?<by>[^.;\u25CF\n]*)", Rx);
+        private static readonly Regex NoTargetingRx = new Regex(@"(?<subj>[^.:;\u25CF\n]*?)\b(?<who>your opponent|neither player|players) (cannot|can) target (?<obj>[^.;\u25CF\n]*?) with (?<by>[^.;\u25CF\n]*?effects?)", Rx);
+        private static readonly Regex UnaffectedRx = new Regex(@"(?<subj>[^.:;\u25CF\n]*?)\bunaffected by (?<by>[^.;\u25CF\n]*?effects?)", Rx);
+        private static readonly Regex IndestructibleRx = new Regex(@"(?<subj>[^.:;\u25CF\n]*?)\bcannot be (targeted or )?destroyed by (?<by>[^.;\u25CF\n]*?effects?)", Rx);
+        private static readonly Regex SubjectCutRx = new Regex(@"\b(cannot|can't|are|is|gains?)\b", Rx);
+        private static readonly Regex LeadingAndRx = new Regex(@"^(and|also)\b", Rx);
+        private static readonly Regex OtherWordRx = new Regex(@"\bother\b", Rx);
+        private static readonly Regex QuotedRx = new Regex("\"([^\"]+)\"");
+        private const int AnyCardType = (int)CardType.Monster | (int)CardType.Spell | (int)CardType.Trap;
+
+        private static readonly Dictionary<int, List<Protection>> ProtectionsById = new Dictionary<int, List<Protection>>();
+
+        private static List<Protection> ProtectionsOf(int id)
+        {
+            lock (Profiles)
+            {
+                List<Protection> list;
+                if (!ProtectionsById.TryGetValue(id, out list))
+                {
+                    NamedCard data = NamedCard.Get(id);
+                    list = data == null ? new List<Protection>() : ReadProtection(data.Description);
+                    ProtectionsById[id] = list;
+                }
+                return list;
+            }
+        }
+
+        private static List<Protection> ReadProtection(string description)
+        {
+            List<Protection> list = new List<Protection>();
+            if (string.IsNullOrEmpty(description))
+                return list;
+            string t = description.Replace("\r\n", "\n").Replace('\r', '\n');
+            foreach (Match m in UntargetableRx.Matches(t))
+                AddProtection(list, ProtectionKind.Untargetable, m.Groups["subj"].Value, m.Groups["by"].Value, null);
+            foreach (Match m in UnaffectedRx.Matches(t))
+                AddProtection(list, ProtectionKind.Unaffected, m.Groups["subj"].Value, m.Groups["by"].Value, null);
+            foreach (Match m in IndestructibleRx.Matches(t))
+                AddProtection(list, ProtectionKind.Indestructible, m.Groups["subj"].Value, m.Groups["by"].Value, null);
+            foreach (Match m in NoTargetingRx.Matches(t))
+            {
+                // "Your opponent cannot target this card / them / monsters you control with card effects."
+                string obj = m.Groups["obj"].Value.Trim().ToLowerInvariant();
+                string subject = obj == "this card" || obj == "it" ? ""
+                    : obj == "them" ? SubjectCutRx.Split(m.Groups["subj"].Value)[0]
+                    : obj;
+                bool opponentOnly = m.Groups["who"].Value.Equals("your opponent", StringComparison.OrdinalIgnoreCase);
+                AddProtection(list, ProtectionKind.Untargetable, subject, m.Groups["by"].Value, opponentOnly);
+            }
+            return list;
+        }
+
+        private static void AddProtection(List<Protection> list, ProtectionKind kind, string subject, string by, bool? opponentOnly)
+        {
+            string b = by.ToLowerInvariant();
+            if (!b.Contains("effect"))
+                return;   // e.g. "cannot be targeted for attacks"
+            Protection rule = new Protection { Kind = kind, OpponentOnly = opponentOnly ?? b.Contains("opponent") };
+            if (b.Contains("spell/trap") || b.Contains("spell") && b.Contains("trap"))
+                rule.From = (int)CardType.Spell | (int)CardType.Trap;
+            else if (b.Contains("spell"))
+                rule.From = (int)CardType.Spell;
+            else if (b.Contains("trap"))
+                rule.From = (int)CardType.Trap;
+            else if (b.Contains("monster"))
+                rule.From = (int)CardType.Monster;
+            else
+                rule.From = AnyCardType;
+
+            // Whose protection: the text before it, after any "While ...," condition.
+            string s = subject.ToLowerInvariant();
+            int comma = s.LastIndexOf(',');
+            if (comma >= 0)
+                s = s.Substring(comma + 1);
+            s = LeadingAndRx.Replace(s.Trim(), "").Trim();
+            if (s.Length == 0 || s.StartsWith("this ") || s == "it")
+            {
+                rule.Scope = ProtectionScope.Self;
+            }
+            else if (s.Contains("equipped monster"))
+            {
+                rule.Scope = ProtectionScope.Equipped;
+            }
+            else if (s.Contains("you control"))
+            {
+                Match quoted = QuotedRx.Match(s);
+                if (quoted.Success)
+                    rule.Archetype = quoted.Groups[1].Value;
+                rule.Scope = s.Contains("monster") ? ProtectionScope.Monsters
+                    : s.Contains("spell") || s.Contains("trap") ? ProtectionScope.SpellTraps
+                    : ProtectionScope.Cards;
+                rule.OthersOnly = OtherWordRx.IsMatch(s);
+            }
+            else
+            {
+                return;   // something we can't place ("Linked monsters", ...)
+            }
+            list.Add(rule);
+        }
+
+        // True if, as far as we can tell, this card can't be hit by the effect we're using:
+        // its own protection, or protection from a card on its controller's side.
+        private bool Shielded(ClientCard card, bool targets, RemovalKind kind, int sourceType)
+        {
+            if (targets && card.Controller == 1 && card.IsShouldNotBeTarget())
                 return true;
-            return aim.Grave && Enemy.Graveyard.Count > 0;
+            bool fromItsOpponent = card.Controller == 1;
+            ClientField side = card.Controller == 0 ? Bot : Enemy;
+            foreach (ClientCard giver in side.GetMonsters().Concat(side.GetSpells()))
+            {
+                if (giver == null || !giver.IsFaceup() || giver.IsDisabled() || !Known(giver))
+                    continue;
+                foreach (Protection rule in ProtectionsOf(giver.Id))
+                {
+                    if (rule.OpponentOnly && !fromItsOpponent)
+                        continue;
+                    if ((rule.From & sourceType) == 0)
+                        continue;
+                    if (!Covers(rule, giver, card))
+                        continue;
+                    if (rule.Kind == ProtectionKind.Unaffected)
+                        return true;
+                    if (rule.Kind == ProtectionKind.Untargetable && targets)
+                        return true;
+                    if (rule.Kind == ProtectionKind.Indestructible && kind == RemovalKind.Destroy)
+                        return true;
+                }
+            }
+            return false;
+        }
+
+        private static bool Covers(Protection rule, ClientCard giver, ClientCard card)
+        {
+            switch (rule.Scope)
+            {
+                case ProtectionScope.Self:
+                    return giver == card;
+                case ProtectionScope.Equipped:
+                    return giver.EquipTarget == card;
+                default:
+                    if (rule.OthersOnly && giver == card)
+                        return false;
+                    if (rule.Scope == ProtectionScope.Monsters && card.Location != CardLocation.MonsterZone)
+                        return false;
+                    if (rule.Scope == ProtectionScope.SpellTraps && card.Location != CardLocation.SpellZone)
+                        return false;
+                    if (rule.Archetype != null && (card.Name == null
+                        || card.Name.IndexOf(rule.Archetype, StringComparison.OrdinalIgnoreCase) < 0))
+                        return false;
+                    return true;
+            }
+        }
+
+        // -----------------------------------------------------------------------------
+        // Reading the opponent's effect at the end of the chain, for rule (2).
+
+        private class TheirEffect
+        {
+            public RemovalKind Kind;           // how it removes its target (Other: it doesn't)
+            public bool TakesControl;
+            public bool NeedsEveryTarget;      // "both", or switching control: fails if one target is gone
+            public bool FollowUpNeedsRemoval;  // "destroy it, and if you do / then ..."
+        }
+
+        private static readonly Regex BothRx = new Regex(@"\bboth\b|\b(switch|swap|exchange) control\b", Rx);
+        private static readonly Regex ControlRx = new Regex(@"\b(take|gain|switch|swap|exchange) control\b", Rx);
+        private static readonly Regex FollowSplitRx = new Regex(@"\b(?:and if you do|then|after that)\b", Rx);
+        private static readonly Regex RemoveVerbRx = new Regex(@"\b(destroy|banish|return|shuffle|send|take control|gain control)\b", Rx);
+
+        private static TheirEffect ReadTheirEffect(string effectText)
+        {
+            string t = effectText.Replace('\r', ' ').Replace('\n', ' ');
+            // What it does to its target: the part after the ";" of the sentence that targets.
+            string action = null;
+            foreach (string sentence in t.Split('.'))
+            {
+                int semicolon = sentence.IndexOf(';');
+                if (semicolon >= 0 && sentence.IndexOf("target", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    action = sentence.Substring(semicolon + 1);
+                    break;
+                }
+            }
+            if (action == null)
+            {
+                int semicolon = t.IndexOf(';');
+                action = semicolon >= 0 ? t.Substring(semicolon + 1) : t;
+            }
+            string[] parts = FollowSplitRx.Split(action, 2);
+            string first = parts[0];
+            bool firstRemoves = RemoveVerbRx.IsMatch(first) && TargetRefRx.IsMatch(first);
+            bool followUp = parts.Length > 1 && parts[1].Trim(' ', ',', '.').Length > 3;
+            return new TheirEffect
+            {
+                Kind = KindOf(action),
+                TakesControl = ControlRx.IsMatch(t),
+                NeedsEveryTarget = BothRx.IsMatch(action),
+                FollowUpNeedsRemoval = firstRemoves && followUp,
+            };
+        }
+
+        // The text of the effect a chain link is using (the matching part, for cards with several).
+        private static string EffectTextOf(ChainInfo info)
+        {
+            NamedCard data = NamedCard.Get(info.ActivateId);
+            if (data == null || string.IsNullOrEmpty(data.Description))
+                return null;
+            string text = data.Description;
+            if (!HasSeveralEffects(text))
+                return text;
+            int desc = info.ActivateDescription;
+            int code = desc > 0 ? desc >> 4 : 0;
+            if (code > 0 && (code == info.ActivateId || code == info.ActivateAlias))
+            {
+                string part = MatchEffect(text, OptionText(desc));
+                if (part != null)
+                    return part;
+            }
+            return text;
+        }
+
+        private static RemovalKind KindOfHint(int hint)
+        {
+            switch (hint)
+            {
+                case HintMsg.Destroy:
+                    return RemovalKind.Destroy;
+                case HintMsg.Remove:
+                    return RemovalKind.Banish;
+                case HintMsg.ReturnToHand:
+                    return RemovalKind.ToHand;
+                case HintMsg.ToDeck:
+                    return RemovalKind.ToDeck;
+                case HintMsg.ToGrave:
+                    return RemovalKind.ToGrave;
+                default:
+                    return RemovalKind.Other;
+            }
         }
 
         private bool CanAttackWell(ClientCard card)
@@ -652,12 +1426,14 @@ namespace WindBot.Game.AI.Decks
         {
             base.OnChainEnd();
             _lastActivated = null;
+            _plan = null;
         }
 
         public override void OnNewPhase()
         {
             base.OnNewPhase();
             _lastActivated = null;
+            _plan = null;
         }
 
         // -----------------------------------------------------------------------------
@@ -921,7 +1697,12 @@ namespace WindBot.Game.AI.Decks
             if (min > max)
                 return null;
 
+            // The plan made when we activated this removal effect (see PlanRemoval).
+            RemovalPlan plan = _plan != null && SourceCardId() == _plan.SourceId ? _plan : null;
+
             Intent intent = IntentOfHint(hint);
+            if (intent == Intent.Unknown && plan != null)
+                intent = Intent.Harm;   // e.g. a plain "select the target" for our removal
             if (intent == Intent.Unknown)
             {
                 Profile source = GetProfile(SourceCardId());
@@ -961,20 +1742,41 @@ namespace WindBot.Game.AI.Decks
                     }
                     return picked;
                 }
-                // The opponent's most threatening cards, as many as allowed...
-                foreach (ClientCard card in cards.Where(c => c.Controller == 1).OrderByDescending(c => Threat(c)))
+                RemovalKind kind = KindOfHint(hint);
+                if (kind == RemovalKind.Other && plan != null)
+                    kind = plan.Kind;
+                bool planUsed = plan != null && cards.Any(c => plan.Own.Contains(c));
+                // Rule (2): our card that the opponent's effect is aimed at comes first.
+                if (plan != null && plan.Response)
+                {
+                    foreach (ClientCard card in plan.Own)
+                    {
+                        if (cards.Contains(card) && picked.Count < max)
+                            picked.Add(card);
+                    }
+                }
+                // The opponent's most threatening cards, as many as allowed (cards whose own
+                // effect this removal would set off come after the others)...
+                foreach (ClientCard card in cards.Where(c => c.Controller == 1 && !picked.Contains(c))
+                    .OrderByDescending(c => Threat(c) - (SetsOffOwnEffect(c, kind, false, false) ? SetsOffEffectPenalty : 0)))
                 {
                     if (picked.Count >= max)
                         break;
                     picked.Add(card);
                 }
-                // ...and only as many of our own (least valuable first) as we must.
-                foreach (ClientCard card in cards.Where(c => c.Controller != 1).OrderBy(c => Value(c)))
+                // ...and only as many of our own as we must: first ones that gain from being
+                // removed this way (rule 1), then the least valuable.
+                bool missesTiming = Duel.CurrentChain.Count > 1;
+                foreach (ClientCard card in cards.Where(c => c.Controller != 1 && !picked.Contains(c))
+                    .OrderBy(c => SetsOffOwnEffect(c, kind, true, missesTiming) ? 0 : 1)
+                    .ThenBy(c => Value(c)))
                 {
                     if (picked.Count >= min)
                         break;
                     picked.Add(card);
                 }
+                if (planUsed)
+                    _plan = null;
                 return picked;
             }
 
