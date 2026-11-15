@@ -30,7 +30,10 @@ namespace WindBot.Game.AI.Decks
     //  - negation only against the opponent, never against our own plays
     //  - removal is aimed at the opponent's most threatening card; costs, discards
     //    and materials use our least valuable cards
-    //  - monsters that can't win a fight go in Defense Position or face-down
+    //  - attacks follow a battle plan (lethal first, then the most threatening monsters,
+    //    weakest attacker that wins each fight); in Main Phase 1 only monsters with a
+    //    part in that plan go to Attack Position, the rest defend or stay face-down
+    //  - FLIP monsters are only flipped when their effect has something to do
     //  - no effects that cost more LP than we have
     [Deck("Smart", "AI_Test", "Test")]
     public class SmartExecutor : DefaultExecutor
@@ -1525,39 +1528,50 @@ namespace WindBot.Game.AI.Decks
         {
             if (Is(card, CardType.Flip))
                 return true;   // FLIP effects need it face-down
-            return !SummonToAttack(Atk(card), Def(card));
+            if (HasSummonEffect(card))
+                return false;  // Setting it would waste its "when Summoned" effect
+            return !SummonToAttack(Atk(card), Def(card), null, card.Id);
+        }
+
+        // "If this card is Normal Summoned: ..." and the like.
+        private static readonly Regex SummonEffectRx = new Regex(@"\b(if|when) this card is (normal |tribute |normal or special |normal or flip )?summoned\b", Rx);
+
+        private static bool HasSummonEffect(ClientCard card)
+        {
+            return card.Data != null && !string.IsNullOrEmpty(card.Data.Description)
+                && SummonEffectRx.IsMatch(card.Data.Description);
+        }
+
+        // Whether we still get to attack with this monster (or one we're about to summon:
+        // null) this turn: our Main Phase 1 with a Battle Phase ahead, after the first turn,
+        // and (in split-zone tag duels) in our own section of the field.
+        private bool CanAttackThisTurn(ClientCard self)
+        {
+            return Duel.Player == 0 && Duel.Phase == DuelPhase.Main1 && Duel.Turn > 1
+                && (Duel.MainPhase == null || Duel.MainPhase.CanBattlePhase)
+                && (self == null || AI.InOwnSection(self));
         }
 
         // Attack Position (true) or defending (false), for a monster being summoned, Set or
-        // repositioned ("self" is the monster itself when it's already on the field):
-        //  - if none of the opponent's face-up monsters has more ATK than ours: attack
-        //  - if one does, but our DEF can stand up to their highest ATK: defend
-        //  - otherwise attack only if there's something we can beat this turn: a monster
-        //    whose ATK (in Attack Position) or DEF (in Defense Position) is lower than our
-        //    ATK, or a face-down monster when our ATK is high enough to risk it
-        //  - otherwise defend
-        // When we still have a Battle Phase this turn, opposing monsters that our other
-        // Attack Position monsters will beat first don't count (see LeftAfterOurAttacks).
-        // In split-zone tag duels only monsters in our own section can attack this turn.
-        private bool SummonToAttack(int atk, int def, ClientCard self = null)
+        // repositioned ("self" is the monster itself when it's already on the field; newCardId
+        // the card about to be summoned otherwise):
+        //  - in Main Phase 1, with a Battle Phase ahead: attack only if the monster has a part
+        //    in this turn's battle plan (see "Battle plan" below)
+        //  - otherwise (no attacks for us this turn): attack only if none of the opponent's
+        //    face-up monsters has more ATK than ours, and never with 0 ATK
+        private bool SummonToAttack(int atk, int def, ClientCard self = null, int newCardId = 0)
         {
-            // Attacking only helps if we still get a Battle Phase this turn.
-            bool canAttackThisTurn = Duel.Player == 0 && Duel.Phase == DuelPhase.Main1 && Duel.Turn > 1
-                && (self == null || AI.InOwnSection(self));
-            List<ClientCard> theirs = canAttackThisTurn ? LeftAfterOurAttacks(self) : Enemy.GetMonsters();
-            int strongest = theirs.Where(m => m.IsFaceup()).Select(m => m.Attack).DefaultIfEmpty(-1).Max();
-            if (strongest <= atk)
-                return true;
-            if (def >= strongest)
-                return false;   // a tie in DEF also survives the attack
-            if (!canAttackThisTurn)
-                return false;
-            foreach (ClientCard monster in theirs)
+            if (CanAttackThisTurn(self))
             {
-                if (atk > Toughness(monster))
-                    return true;
+                Fighter extra = self == null ? NewFighter(null, atk, newCardId) : null;
+                BattlePlan plan = MainPhasePlan(extra);
+                ClientCard card = self;
+                return plan.Attacks.Keys.Any(f => self != null ? f.Card == card : f == extra);
             }
-            return false;
+            if (atk <= 0)
+                return false;
+            int strongest = Enemy.GetMonsters().Where(m => m.IsFaceup()).Select(m => m.Attack).DefaultIfEmpty(-1).Max();
+            return strongest <= atk;
         }
 
         // What an attacker's ATK has to beat to destroy a monster in battle: its ATK in
@@ -1570,39 +1584,351 @@ namespace WindBot.Game.AI.Decks
             return monster.GetDefensePower();
         }
 
-        // The opponent's monsters still standing after our other Attack Position monsters
-        // (not "self") have each made their one attack this turn. The biggest threats go
-        // first, each beaten by the weakest of our monsters that can do it, so a 2600 clears
-        // a 2500 but can't also clear a 2400 next to it.
-        private List<ClientCard> LeftAfterOurAttacks(ClientCard self)
-        {
-            List<int> attackers = Bot.GetMonsters()
-                .Where(m => m != self && m.IsFaceup() && m.IsAttack() && !m.Attacked && AI.InOwnSection(m))
-                .Select(m => m.Attack)
-                .OrderBy(a => a)
-                .ToList();
-            List<ClientCard> left = new List<ClientCard>();
-            foreach (ClientCard monster in Enemy.GetMonsters().OrderByDescending(m => m.IsFaceup() ? m.Attack : -1))
-            {
-                int toughness = Toughness(monster);
-                int beatenBy = attackers.FindIndex(a => a > toughness);
-                if (beatenBy >= 0)
-                    attackers.RemoveAt(beatenBy);
-                else
-                    left.Add(monster);
-            }
-            return left;
-        }
-
         // Changing a monster's battle position uses the same test, monster by monster.
         private bool SmartRepos()
         {
+            bool canAttack = CanAttackThisTurn(Card);
             if (Card.IsFacedown() && Is(Card, CardType.Flip))
-                return DefaultMonsterRepos();   // flipping it face-up is how a FLIP effect triggers
+            {
+                // Flip Summon it for its FLIP effect only if that has something to do (removal
+                // only with one of the opponent's cards to hit), or to attack with it.
+                if (FlipEffectUsable(Card))
+                    return true;
+                return canAttack && MainPhasePlan(null).Attacks.Keys.Any(f => f.Card == Card);
+            }
             if (Card.IsMonsterInvincible())
                 return Card.IsDefense();
-            bool attack = Atk(Card) > 0 && SummonToAttack(Atk(Card), Def(Card), Card);
+            if ((TraitsOf(Card.Id) & BattleTraits.AttacksInDefense) != 0)
+                return Card.IsAttack();   // it can attack from Defense Position, so it stays there
+            bool attack = canAttack ? SummonToAttack(Atk(Card), Def(Card), Card)
+                                    : Atk(Card) > 0 && SummonToAttack(Atk(Card), Def(Card), Card);
             return Card.IsAttack() ? !attack : attack;
+        }
+
+        // A face-down FLIP monster's FLIP effect: whether it would do something useful now.
+        private static readonly Regex FlipEffectRx = new Regex(@"\bFLIP:\s*(?<effect>[^\n\u25CF]*)", RegexOptions.CultureInvariant);
+
+        private bool FlipEffectUsable(ClientCard card)
+        {
+            if (card.Data == null || string.IsNullOrEmpty(card.Data.Description))
+                return false;
+            Match m = FlipEffectRx.Match(card.Data.Description.Replace("\r\n", "\n"));
+            if (!m.Success)
+                return false;
+            string effect = m.Groups["effect"].Value;
+            Aim aim = ReadAim(effect);
+            if (aim != null)
+            {
+                // Removal: only when the opponent has something it can hit, never just our own cards.
+                int sourceType = (int)CardType.Monster;
+                int theirs = 0;
+                if (aim.Monsters)
+                    theirs += Enemy.GetMonsters().Count(c => CanAim(aim, c, sourceType));
+                if (aim.Spells)
+                    theirs += Enemy.GetSpells().Count(c => CanAim(aim, c, sourceType));
+                if (aim.Hand)
+                    theirs += Enemy.Hand.Count;
+                if (aim.Grave)
+                    theirs += Enemy.Graveyard.Count;
+                return theirs >= aim.MinTargets;
+            }
+            Profile p = ReadProfile(effect);
+            if (p.MassOpponent)
+                return Enemy.GetFieldCount() > 0;
+            if (p.MassMonsters || p.MassSpells)
+                return WipeHelpsUs(p);
+            return p.Helpful;
+        }
+
+        // -----------------------------------------------------------------------------
+        // Battle plan: which of our monsters attack what this turn.
+        //
+        // Every way of pairing our attackers with opposing monsters they can beat is tried
+        // (each opposing monster attacked once; when they're all gone, the rest of our
+        // attackers go direct), and the best one is kept:
+        //  - a combination that brings the opponent's LP to 0 beats everything;
+        //  - otherwise: the threat score of what we destroy, plus the damage we deal, minus
+        //    the value of our monsters lost in equal-ATK trades;
+        //  - between equally good plans, the one using weaker attackers, keeping the strong
+        //    ones free (e.g. the 2000 clears a Defense Position 1900 so the 3000 goes direct).
+        // Attacks that would do nothing (no damage, nothing destroyed) aren't part of a plan,
+        // unless the monster has an effect when it attacks.
+        // In the Battle Phase the bot follows the plan and re-plans after every attack (a
+        // face-down monster may turn out tougher than our guess). In Main Phase 1 the plan
+        // decides positions: monsters with a part in it go to Attack Position, the rest defend.
+
+        [Flags]
+        private enum BattleTraits
+        {
+            None = 0,
+            Piercing = 1,          // "inflict piercing battle damage"
+            Direct = 2,            // "can attack directly"
+            AttackEffect = 4,      // "When this card declares an attack" / "If this card attacks"
+            AttacksInDefense = 8,  // "can attack while in face-up Defense Position"
+            DefenseIsPower = 16,   // ...and uses its DEF for damage calculation
+        }
+
+        private static readonly Regex PiercingRx = new Regex(@"\bpiercing (battle )?damage\b", Rx);
+        private static readonly Regex DirectAttackRx = new Regex(@"\bthis card can attack (your opponent )?directly\b", Rx);
+        private static readonly Regex AttackEffectRx = new Regex(@"\b(when|if) this card (declares an attack|attacks)\b", Rx);
+        private static readonly Regex AttacksInDefenseRx = new Regex(@"\bcan attack while (it is )?in (face-up )?defense position\b", Rx);
+        private static readonly Regex DefenseIsPowerRx = new Regex(@"\b(its|this card's) def for (its )?damage calculation\b|\b(use|apply) its def\b", Rx);
+        private static readonly Dictionary<int, BattleTraits> TraitsById = new Dictionary<int, BattleTraits>();
+
+        private static BattleTraits TraitsOf(int id)
+        {
+            lock (Profiles)
+            {
+                BattleTraits traits;
+                if (TraitsById.TryGetValue(id, out traits))
+                    return traits;
+                traits = BattleTraits.None;
+                NamedCard data = NamedCard.Get(id);
+                string text = data != null ? data.Description : null;
+                if (!string.IsNullOrEmpty(text))
+                {
+                    if (PiercingRx.IsMatch(text))
+                        traits |= BattleTraits.Piercing;
+                    if (DirectAttackRx.IsMatch(text))
+                        traits |= BattleTraits.Direct;
+                    if (AttackEffectRx.IsMatch(text))
+                        traits |= BattleTraits.AttackEffect;
+                    if (AttacksInDefenseRx.IsMatch(text))
+                        traits |= BattleTraits.AttacksInDefense;
+                    if (DefenseIsPowerRx.IsMatch(text))
+                        traits |= BattleTraits.DefenseIsPower;
+                }
+                TraitsById[id] = traits;
+                return traits;
+            }
+        }
+
+        private class Fighter
+        {
+            public ClientCard Card;      // null: a monster we're about to summon
+            public int CardId;
+            public int Power;
+            public bool Direct;          // can attack directly even with monsters in the way
+            public bool Piercing;
+            public bool AttackEffect;    // worth attacking with even when it deals no damage
+            public int Value;            // what losing it costs us
+        }
+
+        private class Defender
+        {
+            public ClientCard Card;
+            public bool AttackPosition;
+            public int Threat;
+        }
+
+        // What one attack would do.
+        private struct Outcome
+        {
+            public bool Possible;    // worth declaring at all
+            public bool Destroys;    // the defender is destroyed
+            public bool Trade;       // ...and so is our attacker (equal ATK)
+            public int Damage;       // to the opponent
+        }
+
+        private class BattlePlan
+        {
+            public Dictionary<Fighter, Defender> Attacks = new Dictionary<Fighter, Defender>();  // null: direct attack
+            public long Score;
+        }
+
+        private Fighter NewFighter(ClientCard card, int power, int cardId)
+        {
+            BattleTraits traits = TraitsOf(cardId);
+            return new Fighter
+            {
+                Card = card,
+                CardId = cardId,
+                Power = Math.Max(0, power),
+                Direct = (traits & BattleTraits.Direct) != 0,
+                Piercing = (traits & BattleTraits.Piercing) != 0,
+                AttackEffect = (traits & BattleTraits.AttackEffect) != 0,
+                Value = card != null ? Value(card) : Math.Max(0, power) + 300,
+            };
+        }
+
+        // Main Phase 1: the plan with every monster that could attack this turn: those in
+        // Attack Position, those we could still switch (or Flip Summon) to Attack Position,
+        // those that attack from Defense Position, plus "extra", a monster about to be summoned.
+        private BattlePlan MainPhasePlan(Fighter extra)
+        {
+            List<Fighter> fighters = new List<Fighter>();
+            IList<ClientCard> switchable = Duel.MainPhase != null ? Duel.MainPhase.ReposableCards : null;
+            foreach (ClientCard m in Bot.GetMonsters())
+            {
+                if (m.Attacked || !AI.InOwnSection(m))
+                    continue;
+                BattleTraits traits = TraitsOf(m.Id);
+                bool inAttack = m.IsFaceup() && m.IsAttack();
+                bool fromDefense = m.IsFaceup() && m.IsDefense() && (traits & BattleTraits.AttacksInDefense) != 0;
+                bool canSwitch = switchable != null && switchable.Contains(m);
+                if (!inAttack && !fromDefense && !canSwitch)
+                    continue;
+                int power = fromDefense && (traits & BattleTraits.DefenseIsPower) != 0 ? Def(m) : Atk(m);
+                fighters.Add(NewFighter(m, power, m.Id));
+            }
+            if (extra != null)
+                fighters.Add(extra);
+            return PlanBattle(fighters, Enemy.GetMonsters(), false);
+        }
+
+        // Battle Phase: follow the plan, one attack at a time.
+        public override BattlePhaseAction OnBattle(IList<ClientCard> attackers, IList<ClientCard> defenders)
+        {
+            List<Fighter> fighters = attackers.Select(a => NewFighter(a, a.GetAttackPower(), a.Id)).ToList();
+            foreach (Fighter f in fighters)
+                f.Direct = f.Card.CanDirectAttack;
+            BattlePlan plan = PlanBattle(fighters, defenders, true);
+            if (plan.Attacks.Count == 0)
+            {
+                if (Duel.BattlePhase.CanMainPhaseTwo)
+                    return AI.ToMainPhase2();
+                if (Duel.BattlePhase.CanEndPhase)
+                    return AI.ToEndPhase();
+                return null;
+            }
+            // Unknown face-down monsters first (what they turn out to be may change the plan),
+            // then the biggest threats, then direct attacks, strongest first.
+            KeyValuePair<Fighter, Defender> next = plan.Attacks
+                .OrderBy(a => a.Value == null ? 2 : (a.Value.Card.IsFacedown() ? 0 : 1))
+                .ThenByDescending(a => a.Value == null ? a.Key.Power : a.Value.Threat)
+                .First();
+            return AI.Attack(next.Key.Card, next.Value != null ? next.Value.Card : null);
+        }
+
+        private Outcome Fight(Fighter f, ClientCard defender, bool inBattle)
+        {
+            Outcome o = new Outcome();
+            int power, toughness;
+            if (f.Card != null)
+            {
+                // Lets the usual checks have their say (dangerous or unbeatable monsters, our
+                // guess for face-down ones...).
+                f.Card.RealPower = inBattle ? f.Card.GetAttackPower() : f.Power;
+                defender.RealPower = defender.GetDefensePower();
+                if (!OnPreBattleBetween(f.Card, defender))
+                    return o;
+                power = f.Card.RealPower;
+                toughness = defender.RealPower;
+            }
+            else
+            {
+                if (defender.IsMonsterDangerous() || defender.IsMonsterInvincible() && defender.IsDefense())
+                    return o;
+                power = f.Power;
+                toughness = Toughness(defender);
+            }
+            bool attackPosition = defender.IsFaceup() && defender.IsAttack();
+            bool indestructible = defender.IsMonsterInvincible();
+            if (power > toughness)
+            {
+                o.Destroys = !indestructible;
+                o.Damage = (attackPosition || f.Piercing) ? power - toughness : 0;
+            }
+            else if (power == toughness && attackPosition && power > 0 && !indestructible)
+            {
+                o.Destroys = true;
+                o.Trade = true;
+            }
+            o.Possible = o.Destroys || o.Damage > 0;
+            return o;
+        }
+
+        private BattlePlan PlanBattle(List<Fighter> fighters, IList<ClientCard> enemies, bool inBattle)
+        {
+            List<Defender> defenders = enemies.Where(c => c != null).Select(c => new Defender
+            {
+                Card = c,
+                AttackPosition = c.IsFaceup() && c.IsAttack(),
+                Threat = Threat(c),
+            }).ToList();
+            Outcome[,] outcomes = new Outcome[fighters.Count, defenders.Count];
+            for (int i = 0; i < fighters.Count; ++i)
+                for (int j = 0; j < defenders.Count; ++j)
+                    outcomes[i, j] = Fight(fighters[i], defenders[j].Card, inBattle);
+
+            BattlePlan best = new BattlePlan { Score = 0 };   // attacking with nothing scores 0
+            int[] assigned = new int[defenders.Count];         // fighter attacking each defender, or -1
+            bool[] used = new bool[fighters.Count];
+            for (int j = 0; j < defenders.Count; ++j)
+                assigned[j] = -1;
+            int lifePoints = Enemy.LifePoints;
+
+            Action<int> search = null;
+            search = j =>
+            {
+                if (j < defenders.Count)
+                {
+                    search(j + 1);   // leave this one alone
+                    for (int i = 0; i < fighters.Count; ++i)
+                    {
+                        if (used[i] || !outcomes[i, j].Possible)
+                            continue;
+                        if (outcomes[i, j].Trade && defenders[j].Threat <= fighters[i].Value)
+                            continue;   // an even trade has to be worth it
+                        used[i] = true;
+                        assigned[j] = i;
+                        search(j + 1);
+                        assigned[j] = -1;
+                        used[i] = false;
+                    }
+                    return;
+                }
+                // Every defender decided: score this plan.
+                BattlePlan plan = new BattlePlan();
+                long score = 0, damage = 0, strength = 0;
+                bool allGone = true;
+                for (int d = 0; d < defenders.Count; ++d)
+                {
+                    int i = assigned[d];
+                    if (i < 0)
+                    {
+                        allGone = false;
+                        continue;
+                    }
+                    Outcome o = outcomes[i, d];
+                    plan.Attacks[fighters[i]] = defenders[d];
+                    damage += o.Damage;
+                    strength += fighters[i].Power;
+                    if (o.Destroys)
+                        score += defenders[d].Threat;
+                    else
+                        allGone = false;
+                    if (o.Trade)
+                        score -= fighters[i].Value;
+                    if (fighters[i].AttackEffect)
+                        score += 200;
+                }
+                for (int i = 0; i < fighters.Count; ++i)
+                {
+                    if (used[i] || !(allGone || fighters[i].Direct))
+                        continue;
+                    if (fighters[i].Power <= 0 && !fighters[i].AttackEffect)
+                        continue;   // a direct attack that does nothing
+                    plan.Attacks[fighters[i]] = null;
+                    damage += fighters[i].Power;
+                    strength += fighters[i].Power;
+                    if (fighters[i].AttackEffect)
+                        score += 200;
+                }
+                if (plan.Attacks.Count == 0)
+                    return;
+                score += damage;
+                if (lifePoints > 0 && damage >= lifePoints)
+                    score += 1000000000L;   // that's the duel
+                score = score * 1000 - strength;   // equal plans: the one using weaker attackers
+                if (score > 0 && (best.Attacks.Count == 0 || score > best.Score))
+                {
+                    plan.Score = score;
+                    best = plan;
+                }
+            };
+            search(0);
+            return best;
         }
 
         public override CardPosition OnSelectPosition(int cardId, IList<CardPosition> positions)
@@ -1617,7 +1943,7 @@ namespace WindBot.Game.AI.Decks
             if (atk < 0)
                 wanted = CardPosition.FaceUpAttack;   // "?" ATK: usually set by an effect
             else
-                wanted = SummonToAttack(atk, Math.Max(0, def)) ? CardPosition.FaceUpAttack : CardPosition.FaceUpDefence;
+                wanted = SummonToAttack(atk, Math.Max(0, def), null, cardId) ? CardPosition.FaceUpAttack : CardPosition.FaceUpDefence;
             return positions.Contains(wanted) ? wanted : (CardPosition)0;
         }
 
