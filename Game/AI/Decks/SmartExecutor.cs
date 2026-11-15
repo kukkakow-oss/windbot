@@ -31,9 +31,10 @@ namespace WindBot.Game.AI.Decks
     //  - removal is aimed at the opponent's most threatening card; costs, discards
     //    and materials use our least valuable cards
     //  - attacks follow a battle plan (lethal first, then the most threatening monsters,
-    //    weakest attacker that wins each fight); in Main Phase 1 only monsters with a
-    //    part in that plan go to Attack Position, the rest defend or stay face-down
-    //  - FLIP monsters are only flipped when their effect has something to do
+    //    weakest attacker that wins each fight); in Main Phase 1 monsters with a part
+    //    in that plan go to Attack Position, and others only when their ATK beats both
+    //    their own DEF and every opposing monster left standing
+    //  - FLIP monsters are only flipped when their effect has a use and a valid target
     //  - no effects that cost more LP than we have
     [Deck("Smart", "AI_Test", "Test")]
     public class SmartExecutor : DefaultExecutor
@@ -1555,23 +1556,32 @@ namespace WindBot.Game.AI.Decks
         // Attack Position (true) or defending (false), for a monster being summoned, Set or
         // repositioned ("self" is the monster itself when it's already on the field; newCardId
         // the card about to be summoned otherwise):
-        //  - in Main Phase 1, with a Battle Phase ahead: attack only if the monster has a part
-        //    in this turn's battle plan (see "Battle plan" below)
-        //  - otherwise (no attacks for us this turn): attack only if none of the opponent's
-        //    face-up monsters has more ATK than ours, and never with 0 ATK
+        //  - in Main Phase 1, with a Battle Phase ahead: attack if the monster has a part in
+        //    this turn's battle plan (see "Battle plan" below)
+        //  - otherwise, attack if its ATK is higher than its DEF and higher than the ATK of
+        //    every opponent's monster we know of that will still be there after our attacks
+        //    (all of them, when we don't get to attack this turn)
         private bool SummonToAttack(int atk, int def, ClientCard self = null, int newCardId = 0)
         {
+            BattlePlan plan = null;
             if (CanAttackThisTurn(self))
             {
                 Fighter extra = self == null ? NewFighter(null, atk, newCardId) : null;
-                BattlePlan plan = MainPhasePlan(extra);
-                ClientCard card = self;
-                return plan.Attacks.Keys.Any(f => self != null ? f.Card == card : f == extra);
+                plan = MainPhasePlan(extra);
+                if (plan.Attacks.Keys.Any(f => self != null ? f.Card == self : f == extra))
+                    return true;
             }
-            if (atk <= 0)
-                return false;
-            int strongest = Enemy.GetMonsters().Where(m => m.IsFaceup()).Select(m => m.Attack).DefaultIfEmpty(-1).Max();
-            return strongest <= atk;
+            return atk > 0 && atk > def && atk > StrongestSurvivorAtk(plan);
+        }
+
+        // The highest ATK among the opponent's monsters we know of (face-up, or face-down but
+        // identified), leaving out the ones our battle plan destroys. -1 if there are none.
+        private int StrongestSurvivorAtk(BattlePlan plan)
+        {
+            return Enemy.GetMonsters()
+                .Where(m => (m.IsFaceup() || m.Id != 0) && (plan == null || !plan.Destroyed.Contains(m)))
+                .Select(m => m.IsFaceup() ? m.Attack : (m.Data != null ? m.Data.Attack : 0))
+                .DefaultIfEmpty(-1).Max();
         }
 
         // What an attacker's ATK has to beat to destroy a monster in battle: its ATK in
@@ -1587,21 +1597,15 @@ namespace WindBot.Game.AI.Decks
         // Changing a monster's battle position uses the same test, monster by monster.
         private bool SmartRepos()
         {
-            bool canAttack = CanAttackThisTurn(Card);
+            // A face-down FLIP monster stays face-down unless its FLIP effect has a use (and,
+            // for removal, one of the opponent's cards to hit).
             if (Card.IsFacedown() && Is(Card, CardType.Flip))
-            {
-                // Flip Summon it for its FLIP effect only if that has something to do (removal
-                // only with one of the opponent's cards to hit), or to attack with it.
-                if (FlipEffectUsable(Card))
-                    return true;
-                return canAttack && MainPhasePlan(null).Attacks.Keys.Any(f => f.Card == Card);
-            }
+                return FlipEffectUsable(Card);
             if (Card.IsMonsterInvincible())
                 return Card.IsDefense();
             if ((TraitsOf(Card.Id) & BattleTraits.AttacksInDefense) != 0)
                 return Card.IsAttack();   // it can attack from Defense Position, so it stays there
-            bool attack = canAttack ? SummonToAttack(Atk(Card), Def(Card), Card)
-                                    : Atk(Card) > 0 && SummonToAttack(Atk(Card), Def(Card), Card);
+            bool attack = SummonToAttack(Atk(Card), Def(Card), Card);
             return Card.IsAttack() ? !attack : attack;
         }
 
@@ -1637,8 +1641,23 @@ namespace WindBot.Game.AI.Decks
                 return Enemy.GetFieldCount() > 0;
             if (p.MassMonsters || p.MassSpells)
                 return WipeHelpsUs(p);
-            return p.Helpful;
+            if (!p.Helpful)
+                return false;
+            // "Target 1 monster in your GY; Special Summon it": there has to be one.
+            Match gy = GyTargetRx.Match(effect);
+            if (gy.Success)
+            {
+                string whose = gy.Groups["whose"].Value.ToLowerInvariant();
+                bool monstersOnly = gy.Value.IndexOf("monster", StringComparison.OrdinalIgnoreCase) >= 0;
+                IEnumerable<ClientCard> pool = whose == "your" ? Bot.Graveyard
+                    : whose == "either" ? Bot.Graveyard.Concat(Enemy.Graveyard)
+                    : Enemy.Graveyard;
+                return pool.Any(c => c != null && (!monstersOnly || Is(c, CardType.Monster)));
+            }
+            return true;
         }
+
+        private static readonly Regex GyTargetRx = new Regex(@"\btarget\b[^.;]*?\bin (?<whose>your opponent's|your|either) (gy|graveyard)\b", Rx);
 
         // -----------------------------------------------------------------------------
         // Battle plan: which of our monsters attack what this turn.
@@ -1655,7 +1674,8 @@ namespace WindBot.Game.AI.Decks
         // unless the monster has an effect when it attacks.
         // In the Battle Phase the bot follows the plan and re-plans after every attack (a
         // face-down monster may turn out tougher than our guess). In Main Phase 1 the plan
-        // decides positions: monsters with a part in it go to Attack Position, the rest defend.
+        // decides positions: monsters with a part in it go to Attack Position; the rest only
+        // if they're strong enough to stand there (see SummonToAttack).
 
         [Flags]
         private enum BattleTraits
@@ -1733,6 +1753,7 @@ namespace WindBot.Game.AI.Decks
         private class BattlePlan
         {
             public Dictionary<Fighter, Defender> Attacks = new Dictionary<Fighter, Defender>();  // null: direct attack
+            public HashSet<ClientCard> Destroyed = new HashSet<ClientCard>();
             public long Score;
         }
 
@@ -1766,6 +1787,8 @@ namespace WindBot.Game.AI.Decks
                 bool inAttack = m.IsFaceup() && m.IsAttack();
                 bool fromDefense = m.IsFaceup() && m.IsDefense() && (traits & BattleTraits.AttacksInDefense) != 0;
                 bool canSwitch = switchable != null && switchable.Contains(m);
+                if (canSwitch && m.IsFacedown() && Is(m, CardType.Flip) && !FlipEffectUsable(m))
+                    canSwitch = false;   // stays face-down (see SmartRepos)
                 if (!inAttack && !fromDefense && !canSwitch)
                     continue;
                 int power = fromDefense && (traits & BattleTraits.DefenseIsPower) != 0 ? Def(m) : Atk(m);
@@ -1791,10 +1814,10 @@ namespace WindBot.Game.AI.Decks
                     return AI.ToEndPhase();
                 return null;
             }
-            // Unknown face-down monsters first (what they turn out to be may change the plan),
-            // then the biggest threats, then direct attacks, strongest first.
+            // Monsters we can identify first (biggest threats first), then unidentified
+            // face-down ones, then direct attacks, strongest first.
             KeyValuePair<Fighter, Defender> next = plan.Attacks
-                .OrderBy(a => a.Value == null ? 2 : (a.Value.Card.IsFacedown() ? 0 : 1))
+                .OrderBy(a => a.Value == null ? 2 : (a.Value.Card.IsFacedown() && a.Value.Card.Id == 0 ? 1 : 0))
                 .ThenByDescending(a => a.Value == null ? a.Key.Power : a.Value.Threat)
                 .First();
             return AI.Attack(next.Key.Card, next.Value != null ? next.Value.Card : null);
@@ -1895,9 +1918,14 @@ namespace WindBot.Game.AI.Decks
                     damage += o.Damage;
                     strength += fighters[i].Power;
                     if (o.Destroys)
+                    {
                         score += defenders[d].Threat;
+                        plan.Destroyed.Add(defenders[d].Card);
+                    }
                     else
+                    {
                         allGone = false;
+                    }
                     if (o.Trade)
                         score -= fighters[i].Value;
                     if (fighters[i].AttackEffect)
