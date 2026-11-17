@@ -42,6 +42,10 @@ namespace WindBot.Game
         private int _delayMin;
         private int _delayMax;
 
+        // Bot Theater: which of the opponent team's players is playing for it right now
+        // (0 = its lower lobby slot, 1 = its upper one), tracked through TAG_SWAP messages.
+        private int _enemyActiveMember;
+
         // Bot Theater: set to 1 by the bot script when the game has "Tag: split zones" on.
         private readonly bool _splitZonesSetting =
             Environment.GetEnvironmentVariable("WINDBOT_SPLIT_ZONES") == "1";
@@ -506,6 +510,9 @@ namespace WindBot.Game
             _botDeckNeedsInitialHandSync = _isTag && !_botDeckActive;
             _duel.Fields[0].DeckTrackingActive = _botDeckActive;
             _ai.IsActiveTeammate = _botDeckActive;  // Bot Theater: only the playing teammate reacts in chat
+            // The opponent team starts the same way: its lower slot if it goes first, its upper one if not.
+            _enemyActiveMember = _duel.IsFirst ? 1 : 0;
+            UpdateFacesPlayingOpponent();
             // Bot Theater: split-zone tag duels. A team's lower lobby slot is its first player,
             // who has the left section of the field.
             _ai.SplitZones = _isTag && _splitZonesSetting;
@@ -678,6 +685,14 @@ namespace WindBot.Game
             _duel.DeckReversed = !_duel.DeckReversed;
         }
 
+        // Bot Theater: in tag duels, the "attacked directly" lines come from the player on the same
+        // side of the screen as the opponent who's attacking. Teams face each other, so that's
+        // the teammate in the other lobby slot from the attacker's (lower slot faces upper slot).
+        private void UpdateFacesPlayingOpponent()
+        {
+            _ai.FacesPlayingOpponent = !_isTag || _room.Position % 2 == 1 - _enemyActiveMember;
+        }
+
         private void OnTagSwap(BinaryReader packet)
         {
             int player = GetLocalPlayer(packet.ReadByte());
@@ -695,6 +710,11 @@ namespace WindBot.Game
                 _botDeckActive = !_botDeckActive;
                 field.DeckTrackingActive = _botDeckActive;
                 _ai.IsActiveTeammate = _botDeckActive;  // Bot Theater: only the playing teammate reacts in chat
+            }
+            else
+            {
+                _enemyActiveMember ^= 1;
+                UpdateFacesPlayingOpponent();
             }
 
             field.Deck.Clear();

@@ -20,6 +20,13 @@ namespace WindBot.Game
         public bool IsActiveTeammate { get; set; }
 
         /// <summary>
+        /// Bot Theater: in tag duels, whether this bot is on the same side of the screen as the
+        /// opponent who's playing now (it says the "attacked directly" lines). Always true in
+        /// single duels.
+        /// </summary>
+        public bool FacesPlayingOpponent { get; set; }
+
+        /// <summary>
         /// Bot Theater: true in a split-zone tag duel (WINDBOT_SPLIT_ZONES=1). A teammate then
         /// only attacks with, and uses the Ignition Effects of, cards in its own section of the
         /// field: the left one for its team's first player, the right one for the second, plus
@@ -74,6 +81,7 @@ namespace WindBot.Game
             _dialogs = new Dialogs(game);
             _activatedCards = new Dictionary<int, int>();
             IsActiveTeammate = true;
+            FacesPlayingOpponent = true;
         }
 
         private void CheckSurrender()
@@ -209,7 +217,7 @@ namespace WindBot.Game
         /// </summary>
         public void OnDirectAttack(ClientCard card)
         {
-            if (IsActiveTeammate)
+            if (FacesPlayingOpponent)
                 _dialogs.SendOnDirectAttack(card.Name);
             CheckSurrender();
         }
