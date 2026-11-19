@@ -38,6 +38,8 @@ namespace WindBot.Game
         private ClientCard _lastActivatedCard;  // four players: the card whose effect may need an opponent
         private string _lastDirectAttackerOnBot;  // four players: what attacked us directly this phase (for the knocked-out line)
         private string _lastBotAttacker;          // four players: our last monster to attack (for the victory line)
+        private string _lastOutName;              // four players: the last opponent knocked out (for the victory line)
+        private int _plannedDirectSide = -1;      // four players: the opponent we've decided to attack directly
         private string _lastBotSummoned;          // four players: our last monster summoned (for the victory line)
         private bool _victorySaid;
         private GameMessage _lastMessage;
@@ -71,6 +73,7 @@ namespace WindBot.Game
             _duel = new Duel();
 
             _ai = new GameAI(Game, _duel);
+            _ai.FourPlayerAttackDecided = OnBotAttackDecided;
             _ai.Executor = DecksManager.Instantiate(_ai, _duel);
             Game.SetDeckContext(_ai.Executor.GetType().Name);
             Deck = Deck.Load(Game.DeckFile ?? _ai.Executor.Deck);
@@ -547,6 +550,7 @@ namespace WindBot.Game
             // The opponent team starts the same way: its lower slot if it goes first, its upper one if not.
             _enemyActiveMember = _duel.IsFirst ? 1 : 0;
             UpdateFacesPlayingOpponent();
+            UpdateChatNames();
             // Bot Theater: split-zone tag duels. A team's lower lobby slot is its first player,
             // who has the left section of the field.
             _ai.SplitZones = _isTag && _splitZonesSetting;
@@ -629,6 +633,7 @@ namespace WindBot.Game
             _lastDirectAttackerOnBot = null;
             _lastBotAttacker = null;
             _lastBotSummoned = null;
+            _lastOutName = null;
             _victorySaid = false;
 
             Logger.DebugWriteLine("Free-for-all started in seat " + seat + ": " + _room.Names[_seatLobby[0]] + ", "
@@ -647,11 +652,13 @@ namespace WindBot.Game
             // Our line comes now, while the host pauses after a knock-out: when we're the one
             // knocked out, or when that leaves only us (the duel is won).
             if (side == 0)
-                _ai.SayKnockedOut(_lastDirectAttackerOnBot);
-            else if (!_duel.SideOut[0] && _duel.SideOut[1] && _duel.SideOut[2] && _duel.SideOut[3] && !_victorySaid)
+                _ai.SayKnockedOut(_lastDirectAttackerOnBot, SideName(0));
+            else
+                _lastOutName = SideName(side);
+            if (side != 0 && !_duel.SideOut[0] && _duel.SideOut[1] && _duel.SideOut[2] && _duel.SideOut[3] && !_victorySaid)
             {
                 _victorySaid = true;
-                _ai.SayVictory(VictoryMonsterName());
+                _ai.SayVictory(VictoryMonsterName(), _lastOutName);
             }
         }
 
@@ -687,7 +694,7 @@ namespace WindBot.Game
             {
                 // won without everyone being knocked out (a card that wins the duel)
                 _victorySaid = true;
-                _ai.SayVictory(VictoryMonsterName());
+                _ai.SayVictory(VictoryMonsterName(), _lastOutName);
             }
             string textResult = (result == 2 ? "Draw" : result == 0 ? "Win" : "Lose");
             Logger.DebugWriteLine("Duel finished against " + otherName + ", result: " + textResult);
@@ -827,6 +834,86 @@ namespace WindBot.Game
             _ai.FacesPlayingOpponent = !_isTag || _room.Position % 2 == 1 - _enemyActiveMember;
         }
 
+        // Bot Theater: the names for the attack lines' {1} and {2}: the opponent now playing, and
+        // the player now playing on our side (in tag duels, us or our teammate).
+        private void UpdateChatNames()
+        {
+            if (_room.Position < 0 || _room.Position > 3)
+                return;
+            string opponent, own;
+            if (_isTag)
+            {
+                opponent = _room.Names[(_room.Position < 2 ? 2 : 0) + _enemyActiveMember];
+                own = _room.Names[_botDeckActive ? _room.Position : _room.Position ^ 1];
+            }
+            else
+            {
+                opponent = _room.Position == 0 ? _room.Names[1] : _room.Names[0];
+                own = _room.Names[_room.Position];
+            }
+            _ai.SetChatNames(opponent, own);
+        }
+
+        // Four players: we've decided on an attack, and the engine hasn't heard yet. The first
+        // attack in a turn gets its line now, so it comes before the attack itself (the engine can
+        // play the whole battle out before a line sent on MSG_ATTACK would get there). For a direct
+        // attack we also decide here whom it's aimed at (an opponent that can be attacked directly,
+        // the one with the fewest LP), so the line names the right player; ChooseOpponent sticks
+        // to that when the engine asks.
+        private void OnBotAttackDecided(ClientCard attacker, ClientCard defender)
+        {
+            if (!_isFour || attacker == null)
+                return;
+            if (defender != null)
+            {
+                _plannedDirectSide = -1;
+                _ai.OnFourPlayerAttack(attacker.Name, defender.Name, SideName(SideOfMonster(defender)), false);
+            }
+            else
+            {
+                _plannedDirectSide = PlanDirectTarget();
+                _ai.OnFourPlayerAttack(attacker.Name, null, SideName(_plannedDirectSide), true);
+            }
+        }
+
+        // Four players: the side whose monster zones hold this card (-1 if none).
+        private int SideOfMonster(ClientCard card)
+        {
+            for (int side = 1; side < 4; ++side)
+                if (_duel.Sides[side].MonsterZone.Contains(card))
+                    return side;
+            return -1;
+        }
+
+        // Four players: whom a direct attack goes to: an opponent with no monsters if there is
+        // one, and of those the one with the fewest LP.
+        private int PlanDirectTarget()
+        {
+            int best = -1;
+            bool bestOpen = false;
+            for (int side = 1; side < 4; ++side)
+            {
+                if (_duel.SideOut[side] || _duel.Sides[side].Hand == null)
+                    continue;
+                bool open = _duel.Sides[side].GetMonsterCount() == 0;
+                if (best < 0 || (open && !bestOpen)
+                    || (open == bestOpen && _duel.Sides[side].LifePoints < _duel.Sides[best].LifePoints))
+                {
+                    best = side;
+                    bestOpen = open;
+                }
+            }
+            return best;
+        }
+
+        // Four players: the name of the player on that side.
+        private string SideName(int side)
+        {
+            if (side < 0 || side >= 4)
+                return null;
+            return _room.Names[_seatLobby[_duel.SeatOf(side)]];
+        }
+
         private void OnTagSwap(BinaryReader packet)
         {
             int player = GetLocalPlayer(packet.ReadByte());
@@ -850,6 +937,7 @@ namespace WindBot.Game
                 _enemyActiveMember ^= 1;
                 UpdateFacesPlayingOpponent();
             }
+            UpdateChatNames();
 
             field.Deck.Clear();
             for (int i = 0; i < mcount; ++i)
@@ -1155,7 +1243,13 @@ namespace WindBot.Game
             if (_duel.IsFourPlayer)
             {
                 if (ca == 0)
+                {
                     _lastBotAttacker = attackcard?.Name;
+                    _plannedDirectSide = -1;
+                    // our first attack this turn, if we didn't say its line when deciding on it
+                    // (OnBotAttackDecided): a line naming what (or who) we're attacking
+                    _ai.OnFourPlayerAttack(attackcard?.Name, ld == 0 ? null : defendcard?.Name, SideName(cd), ld == 0);
+                }
                 else if (ld == 0 && cd == 0)
                     _lastDirectAttackerOnBot = attackcard?.Name;
             }
@@ -1883,6 +1977,15 @@ namespace WindBot.Game
         // anything else (destroying, banishing...) to the opponent with the most on their field.
         private int ChooseOpponent(IList<int> options)
         {
+            if (options[0] < 1694 && _plannedDirectSide > 0)
+            {
+                // a direct attack: the opponent we chose (and named) when we decided to attack
+                int planned = _plannedDirectSide;
+                _plannedDirectSide = -1;
+                for (int i = 0; i < options.Count; ++i)
+                    if (GetSide((options[i] - 1690) % 4) == planned)
+                        return i;
+            }
             bool damage = options[0] < 1694 || IsDamageCard(_lastActivatedCard);
             int best = 0;
             long bestScore = long.MinValue;

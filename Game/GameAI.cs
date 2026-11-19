@@ -233,16 +233,41 @@ namespace WindBot.Game
                 _dialogs.SendSummon(card.Name);
         }
 
-        /// <summary>Four players: we've been knocked out.</summary>
-        public void SayKnockedOut(string attacker)
+        /// <summary>
+        /// Four players: called when we've decided on an attack (defender null for a direct
+        /// attack), before the engine hears of it (set by GameBehavior).
+        /// </summary>
+        public System.Action<ClientCard, ClientCard> FourPlayerAttackDecided;
+
+        /// <summary>
+        /// Four players: we've declared an attack; the "welcome" line (direct attack) or the
+        /// "attack" line (attack on a monster), if it's our first attack this turn.
+        /// </summary>
+        public void OnFourPlayerAttack(string attacker, string target, string targetPlayer, bool direct)
         {
-            _dialogs.SendKnockedOut(attacker);
+            _dialogs.SendFirstAttack(attacker, target, targetPlayer, direct);
         }
 
-        /// <summary>Four players: we've won.</summary>
-        public void SayVictory(string monster)
+        /// <summary>Four players: we've been knocked out.</summary>
+        public void SayKnockedOut(string attacker, string self)
         {
-            _dialogs.SendVictory(monster);
+            _dialogs.SendKnockedOut(attacker, self);
+        }
+
+        /// <summary>Four players: we've won (lastOpponent: the last player knocked out).</summary>
+        public void SayVictory(string monster, string lastOpponent)
+        {
+            _dialogs.SendVictory(monster, lastOpponent);
+        }
+
+        /// <summary>
+        /// Two-player and tag duels: the names that go in {2} (and {1} for direct attacks) in the
+        /// attack lines: the opponent now playing, and the player now playing on our side.
+        /// </summary>
+        public void SetChatNames(string opponent, string own)
+        {
+            _dialogs.OpponentName = opponent;
+            _dialogs.OwnName = own;
         }
 
         /// <summary>
@@ -1655,6 +1680,8 @@ namespace WindBot.Game
             }
             _pendingAttacker = attacker;
             _pendingAttackTarget = defender;
+            if (FourPlayerAttackDecided != null)
+                FourPlayerAttackDecided(attacker, defender);
             return new BattlePhaseAction(BattlePhaseAction.BattleAction.Attack, attacker.ActionIndex);
         }
 
