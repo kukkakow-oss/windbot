@@ -62,7 +62,8 @@ namespace WindBot.Game.AI
 
         // Bot Theater: what goes in the attack lines. {0} is the attacking monster, {1} the monster
         // attacked (for a direct attack, the player attacked) and {2} the player attacked or the
-        // player whose monster is attacked. In two-player and tag duels the game doesn't say who
+        // player whose monster is attacked; in our "attacked directly" line, {1} is us and {2}
+        // the player who attacked. In two-player and tag duels the game doesn't say who
         // is playing, so these two are set from the room (the opponent now playing, and the
         // player now playing on our side).
         public string OpponentName { get; set; }
@@ -194,8 +195,8 @@ namespace WindBot.Game.AI
             {
                 attacker = _facedownmonstername;
             }
-            string self = OwnName ?? "me";
-            InternalSendMessage(_ondirectattack, attacker, self, self);
+            // {1} is us (the player attacked), {2} the player who attacked
+            InternalSendMessage(_ondirectattack, attacker, OwnName ?? "me", OpponentName ?? "you");
         }
         public void SendOnDirectAttack()
         {
