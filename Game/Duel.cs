@@ -48,6 +48,7 @@ namespace WindBot.Game
             Fields[1] = new ClientField();
             Sides = Fields;
             SideOut = new bool[4];
+            SideTeam = new int[] { 0, 1, 2, 3 };
             LastChainPlayer = -1;
             LastChainLocation = 0;
             CurrentChain = new List<ClientCard>();
@@ -209,11 +210,46 @@ namespace WindBot.Game
                 cards[i].Sequence = i;
         }
 
+        /// <summary>
+        /// A protocol player number as the AI sees players: 0 the bot, 1 anyone else (four
+        /// players: any of the other three, teammates too), 2 no player. For the side a card or
+        /// chain belongs to (friend or foe), see View.
+        /// </summary>
         public int GetLocalPlayer(int player)
         {
             if (IsFourPlayer)
-                return View(GetSide(player));
+            {
+                int side = GetSide(player);
+                return side == 0 ? 0 : (side < 4 ? 1 : 2);
+            }
             return IsFirst ? player : 1 - player;
+        }
+
+        /// <summary>
+        /// Four players, team matches: each side's team (same number = teammates; side 0 is the
+        /// bot). In a free-for-all everyone has a team of their own.
+        /// </summary>
+        public int[] SideTeam { get; private set; }
+
+        /// <summary>Four players: sets each side's team from each seat's.</summary>
+        public void SetTeams(int[] seatTeam)
+        {
+            for (int seat = 0; seat < 4; ++seat)
+                SideTeam[GetSide(seat)] = seatTeam[seat];
+        }
+
+        /// <summary>Four players: whether that side is the bot's teammate.</summary>
+        public bool IsTeammate(int side)
+        {
+            return IsFourPlayer && side > 0 && side < 4 && SideTeam[side] == SideTeam[0];
+        }
+
+        /// <summary>Whether that side is an opponent (four players: on another team).</summary>
+        public bool IsOpponent(int side)
+        {
+            if (!IsFourPlayer)
+                return side == 1;
+            return side > 0 && side < 4 && SideTeam[side] != SideTeam[0];
         }
 
         /// <summary>
@@ -231,14 +267,15 @@ namespace WindBot.Game
         }
 
         /// <summary>
-        /// How the AI sees a side: 0 the bot, 1 an opponent (any of three in a four-player duel),
-        /// 2 none of them (a draw, or no player).
+        /// How the AI sees a side's cards, chains and summons: 0 the bot's own (four players:
+        /// a teammate's too, so the AI treats them as friendly), 1 an opponent's (any opponent in
+        /// a four-player duel), 2 none of them (a draw, or no player).
         /// </summary>
         public int View(int side)
         {
             if (!IsFourPlayer)
                 return side;
-            if (side == 0)
+            if (side == 0 || IsTeammate(side))
                 return 0;
             return (side > 0 && side < 4) ? 1 : 2;
         }
@@ -272,6 +309,8 @@ namespace WindBot.Game
                 Sides[i] = new ClientField();
             for (int i = 0; i < SideOut.Length; ++i)
                 SideOut[i] = false;
+            for (int i = 0; i < 4; ++i)
+                SideTeam[i] = i;
         }
 
         /// <summary>
@@ -283,7 +322,7 @@ namespace WindBot.Game
             if (IsFourPlayer)
             {
                 for (int side = 1; side < 4; ++side)
-                    if (!SideOut[side])
+                    if (!SideOut[side] && IsOpponent(side))
                         return side;
             }
             return 1;
@@ -300,7 +339,7 @@ namespace WindBot.Game
             List<ClientField> opponents = new List<ClientField>();
             for (int side = 1; side < 4; ++side)
             {
-                if (!SideOut[side] && Sides[side].Hand != null)
+                if (!SideOut[side] && IsOpponent(side) && Sides[side].Hand != null)
                     opponents.Add(Sides[side]);
             }
             Fields[1].MergeFrom(opponents);

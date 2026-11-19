@@ -603,12 +603,27 @@ namespace WindBot.Game
             int[] lifePoints = new int[4];
             for (int s = 0; s < 4; ++s)
                 lifePoints[s] = packet.ReadInt32();
+            int[] decks = new int[4], extras = new int[4];
             for (int s = 0; s < 4; ++s)
             {
-                int deck = packet.ReadInt16();
-                int extra = packet.ReadInt16();
+                decks[s] = packet.ReadInt16();
+                extras[s] = packet.ReadInt16();
+            }
+            // Team matches: each seat's team, then each seat's name-box colour (one byte each).
+            // Hosts before team matches sent neither: everyone for themselves.
+            int[] teams = new int[] { 0, 1, 2, 3 };
+            if (packet.BaseStream.Length - packet.BaseStream.Position >= 8)
+            {
+                for (int s = 0; s < 4; ++s)
+                    teams[s] = packet.ReadByte();
+                for (int s = 0; s < 4; ++s)
+                    packet.ReadByte();
+            }
+            _duel.SetTeams(teams);
+            for (int s = 0; s < 4; ++s)
+            {
                 int side = GetSide(s);
-                _duel.Sides[side].Init(deck, extra, _duel.View(side));
+                _duel.Sides[side].Init(decks[s], extras[s], _duel.View(side));
                 _duel.Sides[side].LifePoints = lifePoints[s];
             }
             _duel.Fields[1].InitCombined(3);
@@ -654,21 +669,31 @@ namespace WindBot.Game
                 _duel.SideOut[side] = true;
             Logger.DebugWriteLine("Player out: side " + side + " (seat " + _duel.SeatOf(side) + "), reason " + reason);
             // Our line comes now, while the host pauses after a knock-out: when we're the one
-            // knocked out, or when that leaves only us (the duel is won).
+            // knocked out, or when that leaves only us and our teammates (the duel is won: every
+            // one of us still in says a victory line).
             if (side == 0)
             {
                 // by whoever attacked us directly; else (battle damage, a card effect) the
-                // player whose turn it is, if that isn't us
-                int bySide = _lastDirectAttackerSide > 0 ? _lastDirectAttackerSide : (_turnSide > 0 && _turnSide < 4 ? _turnSide : -1);
+                // opponent whose turn it is
+                int bySide = _lastDirectAttackerSide > 0 ? _lastDirectAttackerSide : (_duel.IsOpponent(_turnSide) ? _turnSide : -1);
                 _ai.SayKnockedOut(_lastDirectAttackerOnBot, SideName(0), SideName(bySide));
             }
-            else
+            else if (_duel.IsOpponent(side))
                 _lastOutName = SideName(side);
-            if (side != 0 && !_duel.SideOut[0] && _duel.SideOut[1] && _duel.SideOut[2] && _duel.SideOut[3] && !_victorySaid)
+            if (_duel.IsOpponent(side) && !_duel.SideOut[0] && AllOpponentsOut() && !_victorySaid)
             {
                 _victorySaid = true;
                 _ai.SayVictory(VictoryMonsterName(), _lastOutName);
             }
+        }
+
+        // Four players: every opponent knocked out (our team has won).
+        private bool AllOpponentsOut()
+        {
+            for (int side = 1; side < 4; ++side)
+                if (_duel.IsOpponent(side) && !_duel.SideOut[side])
+                    return false;
+            return true;
         }
 
         // For the victory line: our strongest face-up monster, else the last one that attacked,
@@ -682,7 +707,14 @@ namespace WindBot.Game
 
         private void OnWin(BinaryReader packet)
         {
-            int result = GetLocalPlayer(packet.ReadByte());
+            int winner = packet.ReadByte();
+            int result = GetLocalPlayer(winner);
+            if (_isFour)
+            {
+                // the winner's whole team wins (the message names its first player left)
+                int side = GetSide(winner);
+                result = side >= 4 ? 2 : (side == 0 || _duel.IsTeammate(side)) ? 0 : 1;
+            }
 
             string otherName;
             if (_isFour)
@@ -699,9 +731,9 @@ namespace WindBot.Game
             {
                 otherName = _room.Position == 0 ? _room.Names[1] : _room.Names[0];
             }
-            if (_isFour && result == 0 && !_victorySaid)
+            if (_isFour && result == 0 && !_victorySaid && !_duel.SideOut[0])
             {
-                // won without everyone being knocked out (a card that wins the duel)
+                // won without every opponent knocked out (a card that wins the duel)
                 _victorySaid = true;
                 _ai.SayVictory(VictoryMonsterName(), _lastOutName);
             }
@@ -726,7 +758,7 @@ namespace WindBot.Game
                 _duel.AddCard(CardLocation.Hand, card, player, -1, 0, cardId);
             }
             ValidateBotDeckCount();
-            _ai.OnDraw(_duel.View(player));
+            _ai.OnDraw(_duel.IsFourPlayer ? (player == 0 ? 0 : 1) : _duel.View(player));
         }
 
         private void OnShuffleDeck(BinaryReader packet)
@@ -902,7 +934,7 @@ namespace WindBot.Game
             bool bestOpen = false;
             for (int side = 1; side < 4; ++side)
             {
-                if (_duel.SideOut[side] || _duel.Sides[side].Hand == null)
+                if (_duel.SideOut[side] || !_duel.IsOpponent(side) || _duel.Sides[side].Hand == null)
                     continue;
                 bool open = _duel.Sides[side].GetMonsterCount() == 0;
                 if (best < 0 || (open && !bestOpen)
@@ -1243,8 +1275,9 @@ namespace WindBot.Game
                     _duel.Sides[cd].BattlingMonster = defendcard;
                     _duel.Sides[cd].UnderAttack = true;
                 }
-                _duel.Fields[1].BattlingMonster = (ca == 0) ? defendcard : attackcard;
-                if (ca == 0)
+                bool ours = ca == 0 || _duel.IsTeammate(ca);  // our attack, or a teammate's
+                _duel.Fields[1].BattlingMonster = ours ? defendcard : attackcard;
+                if (ours)
                     _duel.Fields[1].UnderAttack = true;
             }
             else
@@ -1320,7 +1353,7 @@ namespace WindBot.Game
             ClientCard card = _duel.GetCard(pcc, pcl, pcs, subs);
             if (card.Id == 0)
                 card.SetId(cardId);
-            int cc = GetLocalPlayer(packet.ReadByte());
+            int cc = _duel.View(GetSide(packet.ReadByte()));  // four players: a teammate's chain is friendly
             packet.ReadInt16(); // trigger location + trigger sequence
             int desc = packet.ReadInt32();
             if (_debug)
@@ -2609,6 +2642,8 @@ namespace WindBot.Game
                     _duel.Sides[side].HintDescriptions.Remove(description);
             }
             Logger.DebugWriteLine("PlayerHint received: player=" + player + ", hintType=" + hintType + " (" + (PlayerHintType)hintType + "), description=" + description);
+            if (_duel.IsTeammate(side))
+                return;  // a teammate's own restrictions aren't ours
             _ai.OnPlayerHint(player, hintType, description);
         }
     }
