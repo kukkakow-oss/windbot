@@ -36,6 +36,10 @@ namespace WindBot.Game
         private bool _chatPlayerOrderSwapped;
         private int _select_hint;
         private ClientCard _lastActivatedCard;  // four players: the card whose effect may need an opponent
+        private string _lastDirectAttackerOnBot;  // four players: what attacked us directly this phase (for the knocked-out line)
+        private string _lastBotAttacker;          // four players: our last monster to attack (for the victory line)
+        private string _lastBotSummoned;          // four players: our last monster summoned (for the victory line)
+        private bool _victorySaid;
         private GameMessage _lastMessage;
 
         // Bot Theater: optional pause before each visible decision, so the duel is
@@ -284,6 +288,7 @@ namespace WindBot.Game
             foreach (NamedCard card in Deck.SideCards)
                 deck.Write(card.Id);
             Connection.Send(deck);
+            _ai.SetFourPlayerChat(_isFour);
             _ai.OnJoinGame();
         }
 
@@ -621,6 +626,10 @@ namespace WindBot.Game
             _duel.SolvingChainIndex = 0;
             _duel.NegatedChainIndexList.Clear();
             _duel.RefreshEnemyView();
+            _lastDirectAttackerOnBot = null;
+            _lastBotAttacker = null;
+            _lastBotSummoned = null;
+            _victorySaid = false;
 
             Logger.DebugWriteLine("Free-for-all started in seat " + seat + ": " + _room.Names[_seatLobby[0]] + ", "
                 + _room.Names[_seatLobby[1]] + ", " + _room.Names[_seatLobby[2]] + ", " + _room.Names[_seatLobby[3]]);
@@ -635,6 +644,24 @@ namespace WindBot.Game
             if (side >= 0 && side < 4)
                 _duel.SideOut[side] = true;
             Logger.DebugWriteLine("Player out: side " + side + " (seat " + _duel.SeatOf(side) + "), reason " + reason);
+            // Our line comes now, while the host pauses after a knock-out: when we're the one
+            // knocked out, or when that leaves only us (the duel is won).
+            if (side == 0)
+                _ai.SayKnockedOut(_lastDirectAttackerOnBot);
+            else if (!_duel.SideOut[0] && _duel.SideOut[1] && _duel.SideOut[2] && _duel.SideOut[3] && !_victorySaid)
+            {
+                _victorySaid = true;
+                _ai.SayVictory(VictoryMonsterName());
+            }
+        }
+
+        // For the victory line: our strongest face-up monster, else the last one that attacked,
+        // else the last one we summoned.
+        private string VictoryMonsterName()
+        {
+            ClientCard best = _duel.Fields[0].GetMonsters().Where(card => card.IsFaceup() && card.Name != null)
+                .OrderByDescending(card => card.Attack).FirstOrDefault();
+            return best != null ? best.Name : (_lastBotAttacker ?? _lastBotSummoned);
         }
 
         private void OnWin(BinaryReader packet)
@@ -655,6 +682,12 @@ namespace WindBot.Game
             else
             {
                 otherName = _room.Position == 0 ? _room.Names[1] : _room.Names[0];
+            }
+            if (_isFour && result == 0 && !_victorySaid)
+            {
+                // won without everyone being knocked out (a card that wins the duel)
+                _victorySaid = true;
+                _ai.SayVictory(VictoryMonsterName());
             }
             string textResult = (result == 2 ? "Draw" : result == 0 ? "Win" : "Lose");
             Logger.DebugWriteLine("Duel finished against " + otherName + ", result: " + textResult);
@@ -903,6 +936,7 @@ namespace WindBot.Game
             _duel.SummoningCards.Clear();
             _duel.LastSummonedCards.Clear();
             _duel.ClearBattle();
+            _lastDirectAttackerOnBot = null;
             List<ClientCard> monsters = _duel.Fields[0].GetMonsters();
             foreach (ClientCard monster in monsters)
             {
@@ -1117,6 +1151,13 @@ namespace WindBot.Game
                 _duel.Fields[attackcard.Controller].BattlingMonster = attackcard;
                 _duel.Fields[1 - attackcard.Controller].BattlingMonster = defendcard;
                 _duel.Fields[1 - attackcard.Controller].UnderAttack = true;
+            }
+            if (_duel.IsFourPlayer)
+            {
+                if (ca == 0)
+                    _lastBotAttacker = attackcard?.Name;
+                else if (ld == 0 && cd == 0)
+                    _lastDirectAttackerOnBot = attackcard?.Name;
             }
             _ai.OnAttack();
 
@@ -2361,6 +2402,12 @@ namespace WindBot.Game
             ClientCard card = _duel.GetCard(currentControler, (CardLocation)currentLocation, currentSequence);
             _duel.SummoningCards.Add(card);
             _duel.LastSummonPlayer = _duel.View(currentControler);
+            if (_duel.IsFourPlayer && currentControler == 0)
+            {
+                if (card?.Name != null)
+                    _lastBotSummoned = card.Name;
+                _ai.OnFourPlayerSummon(card);
+            }
         }
 
         private void OnSummoned(BinaryReader packet)
@@ -2386,6 +2433,12 @@ namespace WindBot.Game
             ClientCard card = _duel.GetCard(currentControler, (CardLocation)currentLocation, currentSequence);
             _duel.SummoningCards.Add(card);
             _duel.LastSummonPlayer = _duel.View(currentControler);
+            if (_duel.IsFourPlayer && currentControler == 0)
+            {
+                if (card?.Name != null)
+                    _lastBotSummoned = card.Name;
+                _ai.OnFourPlayerSummon(card);
+            }
             _ai.OnSpSummoning();
         }
 

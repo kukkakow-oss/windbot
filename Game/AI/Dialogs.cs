@@ -1,6 +1,7 @@
 ﻿using System;
 using System.IO;
 using System.Collections.Generic;
+using System.Linq;
 using System.Runtime.Serialization;
 using System.Runtime.Serialization.Json;
 
@@ -59,6 +60,47 @@ namespace WindBot.Game.AI
         private string[] _chaining;
         private string[] _surrender;
         private string[] _custom;
+
+        // Bot Theater, four-player free-for-all: the game shows what a bot says in a speech bubble
+        // from its portrait, and the bots only say three things: a summon line the first time they
+        // summon a monster in a turn, an "attacked directly" line when they're knocked out, and a
+        // "direct attack" line when they win.
+        public bool FourPlayer { get; set; }
+        private bool _summonedThisTurn;
+
+        public void OnNewTurnFourPlayer()
+        {
+            _summonedThisTurn = false;
+        }
+
+        public void SendKnockedOut(string attacker)
+        {
+            SendFourPlayerLine(_ondirectattack, attacker);
+        }
+
+        public void SendVictory(string monster)
+        {
+            SendFourPlayerLine(_directattack, monster);
+        }
+
+        // A random line from the list. Without a card name to put in it, one that doesn't need a
+        // name if there is one (else the word for a face-down monster).
+        private void SendFourPlayerLine(IList<string> array, string name)
+        {
+            if (!_game._chat || array == null || array.Count == 0)
+                return;
+            IList<string> pool = array;
+            if (string.IsNullOrEmpty(name))
+            {
+                List<string> plain = array.Where(line => !line.Contains("{0}")).ToList();
+                if (plain.Count > 0)
+                    pool = plain;
+                name = _facedownmonstername;
+            }
+            string message = string.Format(pool[Program.Rand.Next(pool.Count)], name);
+            if (message != "")
+                _game.Chat(char.ToUpper(message[0]) + message.Substring(1));
+        }
 
         public Dialogs(GameClient game)
         {
@@ -168,6 +210,15 @@ namespace WindBot.Game.AI
 
         public void SendSummon(string monster)
         {
+            if (FourPlayer)
+            {
+                // free-for-all: only the first summon of each turn
+                if (_summonedThisTurn)
+                    return;
+                _summonedThisTurn = true;
+                SendFourPlayerLine(_summon, monster);
+                return;
+            }
             InternalSendMessage(_summon, monster);
         }
 
@@ -188,7 +239,7 @@ namespace WindBot.Game.AI
 
         private void InternalSendMessage(IList<string> array, params object[] opts)
         {
-            if (!_game._chat)
+            if (!_game._chat || FourPlayer)
                 return;
             if (array == null || array.Count == 0)
                 return;

@@ -167,6 +167,7 @@ namespace WindBot.Game
         /// </summary>
         public void OnNewTurn()
         {
+            _dialogs.OnNewTurnFourPlayer();
             _activatedCards.Clear();
             Executor.OnNewTurn();
         }
@@ -210,6 +211,36 @@ namespace WindBot.Game
             _pendingAttacker = null;
             _pendingAttackTarget = null;
             _attackersWithInvalidPreselectedTarget.Clear();
+        }
+
+        /// <summary>
+        /// Bot Theater, four-player free-for-all: the bot only says its three kinds of line (see Dialogs).
+        /// </summary>
+        public void SetFourPlayerChat(bool fourPlayer)
+        {
+            _dialogs.FourPlayer = fourPlayer;
+        }
+
+        /// <summary>
+        /// Four players: one of our monsters is being summoned (by a card effect too); the summon
+        /// line, if this is our first summon this turn.
+        /// </summary>
+        public void OnFourPlayerSummon(ClientCard card)
+        {
+            if (card != null)
+                _dialogs.SendSummon(card.Name);
+        }
+
+        /// <summary>Four players: we've been knocked out.</summary>
+        public void SayKnockedOut(string attacker)
+        {
+            _dialogs.SendKnockedOut(attacker);
+        }
+
+        /// <summary>Four players: we've won.</summary>
+        public void SayVictory(string monster)
+        {
+            _dialogs.SendVictory(monster);
         }
 
         /// <summary>
