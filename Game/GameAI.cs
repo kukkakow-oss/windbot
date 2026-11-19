@@ -218,6 +218,8 @@ namespace WindBot.Game
         /// </summary>
         public void SetFourPlayerChat(bool fourPlayer)
         {
+            if (fourPlayer && !_dialogs.FourPlayer)
+                _dialogs.UseFourPlayerLines();
             _dialogs.FourPlayer = fourPlayer;
         }
 

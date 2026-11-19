@@ -1,0 +1,42 @@
+{
+  "welcome": [
+    "I will defeat you!"
+  ],
+  "deckerror": [
+    "Sorry, it seems that I have too much {0} in my deck."
+  ],
+  "duelstart": [
+    "Good luck, and have fun!"
+  ],
+  "newturn": [
+    "I draw!"
+  ],
+  "endturn": [
+    "It's your turn."
+  ],
+  "directattack": [
+    "You can't stop me! {0}, attack!"
+  ],
+  "attack": [
+    "{0}, unleash your power on their {1}!"
+  ],
+  "ondirectattack": [
+    "It's just a scratch!"
+  ],
+  "facedownmonstername": "their face-down monster",
+  "activate": [
+    "I'll use {0}."
+  ],
+  "summon": [
+    "{0}, show yourself!"
+  ],
+  "setmonster": [
+    "Attack this monster, I dare you!"
+  ],
+  "chaining": [
+    "Didn't expect {0}, did you?"
+  ],
+  "surrender": [
+    "Good game."
+  ]
+}

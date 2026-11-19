@@ -105,8 +105,23 @@ namespace WindBot.Game.AI
         public Dialogs(GameClient game)
         {
             _game = game;
+            Load(game.Dialog);
+        }
+
+        /// <summary>
+        /// Bot Theater, four-player free-for-all: the lines come from Dialogs/4ffa.json when that
+        /// file is there (else from the usual dialog file).
+        /// </summary>
+        public void UseFourPlayerLines()
+        {
+            const string fourPlayerFile = "4ffa";
+            if (File.Exists(Path.Combine("Dialogs", fourPlayerFile + ".json")))
+                Load(fourPlayerFile);
+        }
+
+        private void Load(string dialogfilename)
+        {
             DataContractJsonSerializer serializer = new DataContractJsonSerializer(typeof(DialogsData));
-            string dialogfilename = game.Dialog;
             using (FileStream fs = Program.ReadFile("Dialogs", dialogfilename, "json"))
             {
                 DialogsData data = (DialogsData)serializer.ReadObject(fs);
