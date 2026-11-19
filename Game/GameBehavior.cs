@@ -37,6 +37,8 @@ namespace WindBot.Game
         private int _select_hint;
         private ClientCard _lastActivatedCard;  // four players: the card whose effect may need an opponent
         private string _lastDirectAttackerOnBot;  // four players: what attacked us directly this phase (for the knocked-out line)
+        private int _lastDirectAttackerSide = -1; // four players: and whose it was
+        private int _turnSide = -1;               // four players: whose turn it is
         private string _lastBotAttacker;          // four players: our last monster to attack (for the victory line)
         private string _lastOutName;              // four players: the last opponent knocked out (for the victory line)
         private int _plannedDirectSide = -1;      // four players: the opponent we've decided to attack directly
@@ -631,6 +633,8 @@ namespace WindBot.Game
             _duel.NegatedChainIndexList.Clear();
             _duel.RefreshEnemyView();
             _lastDirectAttackerOnBot = null;
+            _lastDirectAttackerSide = -1;
+            _turnSide = -1;
             _lastBotAttacker = null;
             _lastBotSummoned = null;
             _lastOutName = null;
@@ -652,7 +656,12 @@ namespace WindBot.Game
             // Our line comes now, while the host pauses after a knock-out: when we're the one
             // knocked out, or when that leaves only us (the duel is won).
             if (side == 0)
-                _ai.SayKnockedOut(_lastDirectAttackerOnBot, SideName(0));
+            {
+                // by whoever attacked us directly; else (battle damage, a card effect) the
+                // player whose turn it is, if that isn't us
+                int bySide = _lastDirectAttackerSide > 0 ? _lastDirectAttackerSide : (_turnSide > 0 && _turnSide < 4 ? _turnSide : -1);
+                _ai.SayKnockedOut(_lastDirectAttackerOnBot, SideName(0), SideName(bySide));
+            }
             else
                 _lastOutName = SideName(side);
             if (side != 0 && !_duel.SideOut[0] && _duel.SideOut[1] && _duel.SideOut[2] && _duel.SideOut[3] && !_victorySaid)
@@ -992,7 +1001,10 @@ namespace WindBot.Game
         private void OnNewTurn(BinaryReader packet)
         {
             _duel.Turn++;
-            _duel.Player = GetLocalPlayer(packet.ReadByte());
+            int turnPlayer = packet.ReadByte();
+            _duel.Player = GetLocalPlayer(turnPlayer);
+            if (_duel.IsFourPlayer)
+                _turnSide = GetSide(turnPlayer);
             _ai.OnNewTurn();
         }
 
@@ -1025,6 +1037,7 @@ namespace WindBot.Game
             _duel.LastSummonedCards.Clear();
             _duel.ClearBattle();
             _lastDirectAttackerOnBot = null;
+            _lastDirectAttackerSide = -1;
             List<ClientCard> monsters = _duel.Fields[0].GetMonsters();
             foreach (ClientCard monster in monsters)
             {
@@ -1251,7 +1264,10 @@ namespace WindBot.Game
                     _ai.OnFourPlayerAttack(attackcard?.Name, ld == 0 ? null : defendcard?.Name, SideName(cd), ld == 0);
                 }
                 else if (ld == 0 && cd == 0)
+                {
                     _lastDirectAttackerOnBot = attackcard?.Name;
+                    _lastDirectAttackerSide = ca;
+                }
             }
             _ai.OnAttack();
 

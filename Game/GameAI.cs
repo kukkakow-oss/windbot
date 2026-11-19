@@ -248,10 +248,10 @@ namespace WindBot.Game
             _dialogs.SendFirstAttack(attacker, target, targetPlayer, direct);
         }
 
-        /// <summary>Four players: we've been knocked out.</summary>
-        public void SayKnockedOut(string attacker, string self)
+        /// <summary>Four players: we've been knocked out (byPlayer: by whom).</summary>
+        public void SayKnockedOut(string attacker, string self, string byPlayer)
         {
-            _dialogs.SendKnockedOut(attacker, self);
+            _dialogs.SendKnockedOut(attacker, self, byPlayer);
         }
 
         /// <summary>Four players: we've won (lastOpponent: the last player knocked out).</summary>

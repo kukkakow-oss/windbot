@@ -99,10 +99,11 @@ namespace WindBot.Game.AI
                 SendFourPlayerLine(_attack, attacker, string.IsNullOrEmpty(target) ? _facedownmonstername : target, targetPlayer);
         }
 
-        // We're knocked out; attacker: what attacked us directly (null if not knocked out that way).
-        public void SendKnockedOut(string attacker, string self)
+        // We're knocked out; attacker: what attacked us directly (null if not knocked out that way);
+        // byPlayer: the player who knocked us out. {1} is us, {2} that player.
+        public void SendKnockedOut(string attacker, string self, string byPlayer)
         {
-            SendFourPlayerLine(_ondirectattack, attacker, self, self);
+            SendFourPlayerLine(_ondirectattack, attacker, self, byPlayer);
         }
 
         // We've won; lastOpponent: the last player knocked out.
