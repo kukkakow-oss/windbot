@@ -57,6 +57,60 @@ namespace WindBot.Game
             }
         }
 
+        /// <summary>
+        /// Bot Theater, four players: makes this the field that stands for all of the bot's
+        /// opponents together, with room for each opponent's Monster and Spell & Trap Zones
+        /// one after another (7 and 8 per opponent). Filled by MergeFrom.
+        /// </summary>
+        public void InitCombined(int fields)
+        {
+            Init(0, 0, 1);
+            MonsterZone = new ClientCard[7 * fields];
+            SpellZone = new ClientCard[8 * fields];
+        }
+
+        /// <summary>
+        /// Bot Theater, four players: refills this combined field from the opponents' own fields.
+        /// Cards keep their own zone numbers (Sequence); its LP is the lowest of theirs.
+        /// </summary>
+        internal void MergeFrom(IList<ClientField> fields)
+        {
+            Hand.Clear();
+            Graveyard.Clear();
+            Banished.Clear();
+            Deck.Clear();
+            ExtraDeck.Clear();
+            HintDescriptions.Clear();
+            for (int i = 0; i < MonsterZone.Length; ++i)
+                MonsterZone[i] = null;
+            for (int i = 0; i < SpellZone.Length; ++i)
+                SpellZone[i] = null;
+            int lowestLp = 0;
+            for (int k = 0; k < fields.Count; ++k)
+            {
+                ClientField field = fields[k];
+                foreach (ClientCard card in field.Hand)
+                    Hand.Add(card);
+                foreach (ClientCard card in field.Graveyard)
+                    Graveyard.Add(card);
+                foreach (ClientCard card in field.Banished)
+                    Banished.Add(card);
+                foreach (ClientCard card in field.Deck)
+                    Deck.Add(card);
+                foreach (ClientCard card in field.ExtraDeck)
+                    ExtraDeck.Add(card);
+                foreach (int desc in field.HintDescriptions)
+                    HintDescriptions.Add(desc);
+                for (int i = 0; i < 7 && 7 * k + i < MonsterZone.Length; ++i)
+                    MonsterZone[7 * k + i] = field.MonsterZone[i];
+                for (int i = 0; i < 8 && 8 * k + i < SpellZone.Length; ++i)
+                    SpellZone[8 * k + i] = field.SpellZone[i];
+                if (k == 0 || field.LifePoints < lowestLp)
+                    lowestLp = field.LifePoints;
+            }
+            LifePoints = lowestLp;
+        }
+
         public void SetInitialDeck(IEnumerable<NamedCard> cards)
         {
             _deckCardCounts = new Dictionary<int, int>();

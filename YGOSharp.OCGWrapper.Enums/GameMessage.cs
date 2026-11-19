@@ -95,6 +95,7 @@
         ShowHint = 164,
         PlayerHint = 165,
         MatchKill = 170,
+        PlayerOut = 171,    // Bot Theater, four players: a player is knocked out (player, reason)
         CustomMsg = 180,
         DuelWinner = 200
     }

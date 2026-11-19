@@ -127,11 +127,11 @@ namespace WindBot.Game
                 packet.ReadInt32(); // Int8 * 4
             if ((flag & (int)Query.EquipCard) != 0)
             {
-                int controller = duel.GetLocalPlayer(packet.ReadByte());
+                int side = duel.GetSide(packet.ReadByte());
                 int location = packet.ReadByte();
                 int sequence = packet.ReadByte();
                 int subSequence = packet.ReadByte();
-                SetEquipTarget(duel.GetCard(controller, location, sequence, subSequence));
+                SetEquipTarget(duel.GetCard(side, location, sequence, subSequence));
             }
             if ((flag & (int)Query.TargetCard) != 0)
             {
@@ -139,11 +139,11 @@ namespace WindBot.Game
                 int count = packet.ReadInt32();
                 for (int i = 0; i < count; ++i)
                 {
-                    int controller = duel.GetLocalPlayer(packet.ReadByte());
+                    int side = duel.GetSide(packet.ReadByte());
                     int location = packet.ReadByte();
                     int sequence = packet.ReadByte();
                     int subSequence = packet.ReadByte();
-                    AddCardTarget(duel.GetCard(controller, location, sequence, subSequence));
+                    AddCardTarget(duel.GetCard(side, location, sequence, subSequence));
                 }
             }
             if ((flag & (int)Query.OverlayCard) != 0)
