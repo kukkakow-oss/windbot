@@ -513,6 +513,7 @@ namespace WindBot.Game
             // The opponent team starts the same way: its lower slot if it goes first, its upper one if not.
             _enemyActiveMember = _duel.IsFirst ? 1 : 0;
             UpdateFacesPlayingOpponent();
+            UpdateChatNames();
             // Bot Theater: split-zone tag duels. A team's lower lobby slot is its first player,
             // who has the left section of the field.
             _ai.SplitZones = _isTag && _splitZonesSetting;
@@ -693,6 +694,26 @@ namespace WindBot.Game
             _ai.FacesPlayingOpponent = !_isTag || _room.Position % 2 == 1 - _enemyActiveMember;
         }
 
+        // Bot Theater: the names for the attack lines' {1} and {2}: the opponent now playing, and
+        // the player now playing on our side (in tag duels, us or our teammate).
+        private void UpdateChatNames()
+        {
+            if (_room.Position < 0 || _room.Position > 3)
+                return;
+            string opponent, own;
+            if (_isTag)
+            {
+                opponent = _room.Names[(_room.Position < 2 ? 2 : 0) + _enemyActiveMember];
+                own = _room.Names[_botDeckActive ? _room.Position : _room.Position ^ 1];
+            }
+            else
+            {
+                opponent = _room.Position == 0 ? _room.Names[1] : _room.Names[0];
+                own = _room.Names[_room.Position];
+            }
+            _ai.SetChatNames(opponent, own);
+        }
+
         private void OnTagSwap(BinaryReader packet)
         {
             int player = GetLocalPlayer(packet.ReadByte());
@@ -716,6 +737,7 @@ namespace WindBot.Game
                 _enemyActiveMember ^= 1;
                 UpdateFacesPlayingOpponent();
             }
+            UpdateChatNames();
 
             field.Deck.Clear();
             for (int i = 0; i < mcount; ++i)

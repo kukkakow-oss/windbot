@@ -203,6 +203,16 @@ namespace WindBot.Game
         }
 
         /// <summary>
+        /// Two-player and tag duels: the names that go in {2} (and {1} for direct attacks) in the
+        /// attack lines: the opponent now playing, and the player now playing on our side.
+        /// </summary>
+        public void SetChatNames(string opponent, string own)
+        {
+            _dialogs.OpponentName = opponent;
+            _dialogs.OwnName = own;
+        }
+
+        /// <summary>
         /// Called when an attack has been declared and its battling monsters have been recorded.
         /// </summary>
         public void OnAttack()

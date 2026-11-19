@@ -60,6 +60,47 @@ namespace WindBot.Game.AI
         private string[] _surrender;
         private string[] _custom;
 
+        // Bot Theater: what goes in the attack lines. {0} is the attacking monster, {1} the monster
+        // attacked (for a direct attack, the player attacked) and {2} the player attacked or the
+        // player whose monster is attacked. In two-player and tag duels the game doesn't say who
+        // is playing, so these two are set from the room (the opponent now playing, and the
+        // player now playing on our side).
+        public string OpponentName { get; set; }
+        public string OwnName { get; set; }
+
+        // A random line from the list with its {0}, {1}... filled in. Lines that can't be filled in
+        // (one with a {3} where there's nothing for it, or a stray brace) are skipped instead of
+        // stopping the bot with an error.
+        private static string PickLine(IList<string> array, object[] opts)
+        {
+            if (array == null || array.Count == 0)
+                return null;
+            List<string> usable = new List<string>();
+            foreach (string line in array)
+            {
+                string message = FormatLine(line, opts);
+                if (message != null)
+                    usable.Add(message);
+            }
+            if (usable.Count == 0)
+                return null;
+            return usable[Program.Rand.Next(usable.Count)];
+        }
+
+        private static string FormatLine(string line, object[] opts)
+        {
+            if (line == null)
+                return null;
+            try
+            {
+                return string.Format(line, opts);
+            }
+            catch (FormatException)
+            {
+                return null;
+            }
+        }
+
         public Dialogs(GameClient game)
         {
             _game = game;
@@ -132,7 +173,8 @@ namespace WindBot.Game.AI
         {
             if (!ChanceToSay(DirectAttackChatChance))
                 return;
-            InternalSendMessage(_directattack, attacker);
+            string target = OpponentName ?? "you";
+            InternalSendMessage(_directattack, attacker, target, target);
         }
 
         public void SendAttack(string attacker, string defender)
@@ -141,7 +183,7 @@ namespace WindBot.Game.AI
             {
                 defender = _facedownmonstername;
             }
-            InternalSendMessage(_attack, attacker, defender);
+            InternalSendMessage(_attack, attacker, defender, OpponentName ?? "you");
         }
 
         public void SendOnDirectAttack(string attacker)
@@ -152,7 +194,8 @@ namespace WindBot.Game.AI
             {
                 attacker = _facedownmonstername;
             }
-            InternalSendMessage(_ondirectattack, attacker);
+            string self = OwnName ?? "me";
+            InternalSendMessage(_ondirectattack, attacker, self, self);
         }
         public void SendOnDirectAttack()
         {
@@ -190,26 +233,24 @@ namespace WindBot.Game.AI
         {
             if (!_game._chat)
                 return;
-            if (array == null || array.Count == 0)
-                return;
-            string message = string.Format(array[Program.Rand.Next(array.Count)], opts);
-            if (message != "")
+            string message = PickLine(array, opts);
+            if (!string.IsNullOrEmpty(message))
                 _game.Chat(message);
         }
 
         private void InternalSendMessageForced(IList<string> array, params object[] opts)
         {
-            string message = string.Format(array[Program.Rand.Next(array.Count)], opts);
-            if (message != "")
+            string message = PickLine(array, opts);
+            if (!string.IsNullOrEmpty(message))
                 _game.Chat(message);
         }
 
         public void SendCustomChat(int index, params object[] opts)
         {
-            if (!_game._chat || _custom == null)
+            if (!_game._chat || _custom == null || index < 0 || index >= _custom.Length)
                 return;
-            string message = string.Format(_custom[index], opts);
-            if (message != "")
+            string message = FormatLine(_custom[index], opts);
+            if (!string.IsNullOrEmpty(message))
                 _game.Chat(message);
         }
     }
