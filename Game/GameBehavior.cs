@@ -30,6 +30,14 @@ namespace WindBot.Game
         private bool _debug;
         private bool _isTag;
         private bool _isFour;   // Bot Theater: a four-player free-for-all room
+        // Bot Theater: a five-a-side room (two teams of five; see FiveDuel in the game). Our
+        // member number in our team (0-4: turn order, and our column is 4 - it), the member now
+        // playing for each side (0 us, 1 the opponents), and the lobby position of each side's
+        // members (by the duel's own side numbering: side * 5 + member).
+        private bool _isFive;
+        private int _fiveMember;
+        private readonly int[] _fiveActive = new int[2];
+        private readonly int[] _fivePos = new int[10];
         private readonly int[] _seatLobby = { 0, 1, 2, 3 };    // four players: the lobby position of each seat's player
         private bool _botDeckActive;
         private bool _botDeckNeedsInitialHandSync;
@@ -281,6 +289,7 @@ namespace WindBot.Game
             int duel_rule = packet.ReadByte();
             _isTag = (mode == 2);
             _isFour = (mode == 3);
+            _isFive = (mode == 4);
             _ai.Duel.IsNewRule = (duel_rule >= 4);
             _ai.Duel.IsNewRule2020 = (duel_rule >= 5);
             BinaryWriter deck = GamePacketFactory.Create(CtosMessage.UpdateDeck);
@@ -317,7 +326,8 @@ namespace WindBot.Game
         {
             int type = packet.ReadByte();
             int pos = type & 0xF;
-            if (pos < 0 || pos > 3)
+            // five-a-side rooms: ten places, lobby positions 0-6 and 8-10 (7 is a spectator)
+            if (pos < 0 || pos > (_isFive ? 10 : 3) || (_isFive && pos == 7))
             {
                 Connection.Close();
                 return;
@@ -332,7 +342,7 @@ namespace WindBot.Game
         {
             string name = packet.ReadUnicode(20);
             int pos = packet.ReadByte();
-            if (pos < 8)
+            if (pos < _room.Names.Length)
                 _room.Names[pos] = name;
         }
 
@@ -341,7 +351,7 @@ namespace WindBot.Game
             int change = packet.ReadByte();
             int pos = (change >> 4) & 0xF;
             int state = change & 0xF;
-            if (pos > 3)
+            if (pos > 3 && !(_isFive && pos < _room.Names.Length))
                 return;
             if (state < 8)
             {
@@ -363,6 +373,10 @@ namespace WindBot.Game
 
             bool allPlayersReady = _room.IsReady[0] && _room.IsReady[1] &&
                 ((!_isTag && !_isFour) || (_room.IsReady[2] && _room.IsReady[3]));
+            if (_isFive)
+                for (int p = 0; p <= 10; ++p)
+                    if (p != 7 && !_room.IsReady[p])
+                        allPlayersReady = false;
             if (_room.IsHost && allPlayersReady)
                 Connection.Send(CtosMessage.HsStart);
         }
@@ -421,7 +435,9 @@ namespace WindBot.Game
             if (Program.ServerMode) return;
             int player = packet.ReadUInt16();
             string message = packet.ReadUnicode(256);
-            if (player < 4)
+            if (_isFive && player <= 10 && player != 7)
+                Logger.DebugWriteLine((_room.Names[player] ?? "Player " + player) + " says: " + message);
+            else if (player < 4)
             {
                 int namePosition = player;
                 if (_isFour && _duel.IsFourPlayer)
@@ -519,7 +535,7 @@ namespace WindBot.Game
             _duel.IsFirst = (type & 0xF) == 0;
             // The server may reorder player types for turn order, while room names remain in lobby slots.
             int roomTeam = _isTag ? _room.Position / 2 : _room.Position;
-            _chatPlayerOrderSwapped = roomTeam != (_duel.IsFirst ? 0 : 1);
+            _chatPlayerOrderSwapped = !_isFive && roomTeam != (_duel.IsFirst ? 0 : 1);
             _duel.Turn = 0;
             _duel.LastChainLocation = 0;
             _duel.LastChainPlayer = -1;
@@ -538,6 +554,21 @@ namespace WindBot.Game
             deck = packet.ReadInt16();
             extra = packet.ReadInt16();
             _duel.Fields[GetLocalPlayer(1)].Init(deck, extra, GetLocalPlayer(1));
+            if (_isFive)
+            {
+                // Bot Theater, five-a-side: then our member number and each side's members'
+                // lobby seats (0-9; positions skip 7).
+                _fiveMember = packet.ReadByte();
+                if (_fiveMember > 4)
+                    _fiveMember = 0;
+                for (int place = 0; place < 10; ++place)
+                {
+                    int seat = packet.ReadByte();
+                    _fivePos[place] = seat < 7 ? seat : seat + 1;
+                }
+                _fiveActive[0] = 0;
+                _fiveActive[1] = 0;
+            }
 
             _duel.Fields[0].SetInitialDeck(Deck.Cards);
             // In tag duels the first team's lower lobby slot and the second team's upper
@@ -546,17 +577,22 @@ namespace WindBot.Game
             _botDeckActive = !_isTag || (_duel.IsFirst
                 ? _room.Position % 2 == 0
                 : _room.Position % 2 == 1);
-            _botDeckNeedsInitialHandSync = _isTag && !_botDeckActive;
+            if (_isFive)   // five-a-side: each side's member 0 plays first
+                _botDeckActive = _fiveMember == 0;
+            _botDeckNeedsInitialHandSync = (_isTag || _isFive) && !_botDeckActive;
             _duel.Fields[0].DeckTrackingActive = _botDeckActive;
             _ai.IsActiveTeammate = _botDeckActive;  // Bot Theater: only the playing teammate reacts in chat
             // The opponent team starts the same way: its lower slot if it goes first, its upper one if not.
             _enemyActiveMember = _duel.IsFirst ? 1 : 0;
+            if (_isFive)
+                _enemyActiveMember = 0;
             UpdateFacesPlayingOpponent();
             UpdateChatNames();
             // Bot Theater: split-zone tag duels. A team's lower lobby slot is its first player,
             // who has the left section of the field.
-            _ai.SplitZones = _isTag && _splitZonesSetting;
+            _ai.SplitZones = (_isTag && _splitZonesSetting) || _isFive;
             _ai.LeftSection = _room.Position % 2 == 0;
+            _ai.OwnColumn = _isFive ? 4 - _fiveMember : -1;   // five-a-side: one column each
             ValidateBotDeckCount();
 
             // in case of ending duel in chain's solving
@@ -568,7 +604,12 @@ namespace WindBot.Game
             _duel.SolvingChainIndex = 0;
             _duel.NegatedChainIndexList.Clear();
 
-            if (_isTag)
+            if (_isFive)
+            {
+                Logger.DebugWriteLine("Five-a-side started: member " + _fiveMember + " (column " + (4 - _fiveMember)
+                    + ") of the team that plays " + (_duel.IsFirst ? "first" : "second"));
+            }
+            else if (_isTag)
             {
                 Logger.DebugWriteLine("Duel started: " + _room.Names[0] + " and " + _room.Names[1] +
                     " versus " + _room.Names[2] + " and " + _room.Names[3]);
@@ -720,6 +761,10 @@ namespace WindBot.Game
             if (_isFour)
             {
                 otherName = "three opponents";
+            }
+            else if (_isFive)
+            {
+                otherName = "the other team";
             }
             else if (_isTag)
             {
@@ -873,12 +918,29 @@ namespace WindBot.Game
         private void UpdateFacesPlayingOpponent()
         {
             _ai.FacesPlayingOpponent = !_isTag || _room.Position % 2 == 1 - _enemyActiveMember;
+            // Five-a-side: the opponents' member m has their column 4 - m, which faces our column
+            // m, which is our member 4 - m's.
+            if (_isFive)
+                _ai.FacesPlayingOpponent = _fiveMember == 4 - _fiveActive[1];
+        }
+
+        // Five-a-side: the name of a side's member (side: 0 us, 1 the opponents).
+        private string FiveName(int side, int member)
+        {
+            int duelSide = _duel.IsFirst ? side : 1 - side;
+            int pos = _fivePos[duelSide * 5 + member];
+            return pos >= 0 && pos < _room.Names.Length ? _room.Names[pos] : null;
         }
 
         // Bot Theater: the names for the attack lines' {1} and {2}: the opponent now playing, and
         // the player now playing on our side (in tag duels, us or our teammate).
         private void UpdateChatNames()
         {
+            if (_isFive)
+            {
+                _ai.SetChatNames(FiveName(1, _fiveActive[1]), FiveName(0, _fiveActive[0]));
+                return;
+            }
             if (_room.Position < 0 || _room.Position > 3)
                 return;
             string opponent, own;
@@ -969,13 +1031,23 @@ namespace WindBot.Game
             {
                 if (_botDeckActive)
                     ValidateBotDeckCount();
-                _botDeckActive = !_botDeckActive;
+                if (_isFive)
+                {
+                    // five-a-side: our team's next member takes over
+                    _fiveActive[0] = (_fiveActive[0] + 1) % 5;
+                    _botDeckActive = _fiveActive[0] == _fiveMember;
+                }
+                else
+                    _botDeckActive = !_botDeckActive;
                 field.DeckTrackingActive = _botDeckActive;
                 _ai.IsActiveTeammate = _botDeckActive;  // Bot Theater: only the playing teammate reacts in chat
             }
             else
             {
-                _enemyActiveMember ^= 1;
+                if (_isFive)
+                    _fiveActive[1] = (_fiveActive[1] + 1) % 5;
+                else
+                    _enemyActiveMember ^= 1;
                 UpdateFacesPlayingOpponent();
             }
             UpdateChatNames();

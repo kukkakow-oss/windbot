@@ -1826,6 +1826,8 @@ namespace WindBot.Game.AI.Decks
         private Outcome Fight(Fighter f, ClientCard defender, bool inBattle)
         {
             Outcome o = new Outcome();
+            if (!AI.FacesAcross(f.Card, defender))
+                return o;   // five-a-side: only straight across
             int power, toughness;
             if (f.Card != null)
             {
@@ -1933,7 +1935,17 @@ namespace WindBot.Game.AI.Decks
                 }
                 for (int i = 0; i < fighters.Count; ++i)
                 {
-                    if (used[i] || !(allGone || fighters[i].Direct))
+                    // Five-a-side: a monster attacks directly when nothing is left straight across.
+                    bool open = allGone;
+                    if (AI.FiveColumns)
+                    {
+                        open = true;
+                        for (int d = 0; d < defenders.Count; ++d)
+                            if (AI.FacesAcross(fighters[i].Card, defenders[d].Card)
+                                && !(assigned[d] >= 0 && outcomes[assigned[d], d].Destroys))
+                                open = false;
+                    }
+                    if (used[i] || !(open || fighters[i].Direct))
                         continue;
                     if (fighters[i].Power <= 0 && !fighters[i].AttackEffect)
                         continue;   // a direct attack that does nothing

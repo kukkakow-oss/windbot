@@ -40,6 +40,40 @@ namespace WindBot.Game
         public bool LeftSection { get; set; }
 
         /// <summary>
+        /// Bot Theater, five-a-side: our column (0-4 from our own left), or -1 in any other duel.
+        /// Our section is then just that column (with the Extra Monster Zone in it, for columns
+        /// 1 and 3), and our monsters may only attack the opponents' monsters straight across.
+        /// </summary>
+        public int OwnColumn { get; set; } = -1;
+
+        /// <summary>Bot Theater: true in a five-a-side duel (see OwnColumn).</summary>
+        public bool FiveColumns { get { return OwnColumn >= 0; } }
+
+        /// <summary>
+        /// Bot Theater, five-a-side: the column (0-4, from its controller's own left) of a card in
+        /// a Monster Zone (the Extra Monster Zones are in columns 1 and 3) or Spell/Trap Zone.
+        /// </summary>
+        public static int ColumnOf(ClientCard card)
+        {
+            if (card.Location == CardLocation.MonsterZone && card.Sequence >= 5)
+                return card.Sequence == 5 ? 1 : 3;
+            return card.Sequence;
+        }
+
+        /// <summary>
+        /// Bot Theater, five-a-side: whether our monster (null: one still to come, in our own
+        /// column) may attack this opponent's monster, which has to be straight across from it.
+        /// Always true in any other duel.
+        /// </summary>
+        public bool FacesAcross(ClientCard ours, ClientCard theirs)
+        {
+            if (!FiveColumns || theirs == null)
+                return true;
+            int column = ours != null ? ColumnOf(ours) : OwnColumn;
+            return 4 - ColumnOf(theirs) == column;
+        }
+
+        /// <summary>
         /// Bot Theater: whether this card of ours is in our own section (or a shared zone), so we
         /// can attack with it, change its position and use its Ignition Effects on our turn. Always true outside
         /// split-zone tag duels, and for cards that aren't in a Monster or Spell/Trap Zone.
@@ -49,6 +83,16 @@ namespace WindBot.Game
             if (!SplitZones || card == null || card.Controller != 0)
                 return true;
             int seq = card.Sequence;
+            if (FiveColumns)
+            {
+                // five-a-side: our column, its Extra Monster Zone, the shared Field Zone, and at
+                // either end the older rules' Pendulum Zone
+                if (card.Location == CardLocation.MonsterZone)
+                    return seq == OwnColumn || (seq == 5 && OwnColumn == 1) || (seq == 6 && OwnColumn == 3);
+                if (card.Location == CardLocation.SpellZone)
+                    return seq == OwnColumn || seq == 5 || (seq == 6 && OwnColumn == 0) || (seq == 7 && OwnColumn == 4);
+                return true;
+            }
             if (card.Location == CardLocation.MonsterZone)
             {
                 // Main Monster Zones 0-4 (2 is shared), Extra Monster Zones 5 (left) and 6 (right)
@@ -430,7 +474,7 @@ namespace WindBot.Game
             if (result != null)
                 return result;
 
-            if (defenders.Count == 0)
+            if (defenders.Count == 0 && !FiveColumns)
             {
                 // Attack with the monster with the lowest attack first
                 ClientCard attacker = attackers[attackers.Count - 1];
@@ -442,7 +486,10 @@ namespace WindBot.Game
                 {
                     ClientCard attacker = attackers[k];
                     attacker.IsLastAttacker = (k == attackers.Count - 1);
-                    result = Executor.OnSelectAttackTarget(attacker, defenders);
+                    // five-a-side: only the monsters straight across from this attacker
+                    IList<ClientCard> targets = FiveColumns
+                        ? defenders.Where(d => FacesAcross(attacker, d)).ToList() : defenders;
+                    result = Executor.OnSelectAttackTarget(attacker, targets);
                     if (result != null)
                         return result;
                 }

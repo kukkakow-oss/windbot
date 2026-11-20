@@ -9,8 +9,8 @@
 
         public Room()
         {
-            Names = new string[8];
-            IsReady = new bool[8];
+            Names = new string[11];     // Bot Theater: five-a-side rooms have lobby positions up to 10
+            IsReady = new bool[11];
             Position = -1;
         }
     }
