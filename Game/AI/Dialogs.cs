@@ -127,9 +127,14 @@ namespace WindBot.Game.AI
             for (int i = 0; i < args.Length; ++i)
                 filled[i] = !string.IsNullOrEmpty(args[i]) ? args[i] : (i == 0 ? _facedownmonstername : "you");
             string message = PickLine(pool, filled);
-            if (!string.IsNullOrEmpty(message))
-                _game.Chat(char.ToUpper(message[0]) + message.Substring(1));
+            if (string.IsNullOrEmpty(message))
+                return;
+            // "on their {1}" with {1} = "their face-down monster": say "their" once
+            message = DoubledWord.Replace(message, "$1");
+            _game.Chat(char.ToUpper(message[0]) + message.Substring(1));
         }
+
+        private static readonly Regex DoubledWord = new Regex(@"\b(their|your|the|my|his|her) \1\b", RegexOptions.IgnoreCase);
 
         private static readonly Regex Placeholder = new Regex(@"(?<!\{)\{(\d+)");
 
