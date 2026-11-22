@@ -71,11 +71,12 @@ namespace WindBot.Game.AI
         public string OpponentName { get; set; }
         public string OwnName { get; set; }
 
-        // Bot Theater, four-player free-for-all: the game shows what a bot says in a speech bubble
-        // from its portrait, and the bots only say these: a summon line the first time they summon
-        // a monster in a turn, a "welcome" line the first time they attack directly in a turn or
-        // an "attack" line if that first attack is on a monster, an "attacked directly" line when
-        // they're knocked out, and a "direct attack" line when they win.
+        // Bot Theater (every mode; it began with the four-player free-for-all, where the game shows
+        // what a bot says in a speech bubble from its portrait): the bots only say these: a summon
+        // line the first time they summon a monster in a turn, a "welcome" line the first time they
+        // attack directly in a turn or an "attack" line if that first attack is on a monster, an
+        // "attacked directly" line when they're knocked out (or lose a two-player duel), and a
+        // "direct attack" line when they win.
         public bool FourPlayer { get; set; }
         private bool _summonedThisTurn;
         private bool _attackedThisTurn;
@@ -184,8 +185,8 @@ namespace WindBot.Game.AI
         }
 
         /// <summary>
-        /// Bot Theater, four-player free-for-all: the lines come from Dialogs/4ffa.json when that
-        /// file is there (else from the usual dialog file).
+        /// Bot Theater (every mode): the lines come from Dialogs/4ffa.json when that file is there
+        /// (else from the usual dialog file).
         /// </summary>
         public void UseFourPlayerLines()
         {

@@ -302,7 +302,9 @@ namespace WindBot.Game
             foreach (NamedCard card in Deck.SideCards)
                 deck.Write(card.Id);
             Connection.Send(deck);
-            _ai.SetFourPlayerChat(_isFour);
+            // Bot Theater: every mode uses the free-for-all line rules (and Dialogs/4ffa.json): one
+            // summon line and one attack line a turn, and one line each at the end of the duel.
+            _ai.SetFourPlayerChat(true);
             _ai.OnJoinGame();
         }
 
@@ -618,6 +620,9 @@ namespace WindBot.Game
             {
                 Logger.DebugWriteLine("Duel started: " + _room.Names[0] + " versus " + _room.Names[1]);
             }
+            _lastBotAttacker = null;
+            _lastBotSummoned = null;
+            _lastDirectAttackerOnBot = null;
             _ai.OnStart();
         }
 
@@ -737,11 +742,12 @@ namespace WindBot.Game
             return true;
         }
 
-        // For the victory line: our strongest face-up monster, else the last one that attacked,
-        // else the last one we summoned.
+        // For the victory line: our strongest face-up monster (five-a-side: in our own column), else
+        // the last one that attacked, else the last one we summoned.
         private string VictoryMonsterName()
         {
-            ClientCard best = _duel.Fields[0].GetMonsters().Where(card => card.IsFaceup() && card.Name != null)
+            ClientCard best = _duel.Fields[0].GetMonsters()
+                .Where(card => card.IsFaceup() && card.Name != null && (!_isFive || _ai.InOwnSection(card)))
                 .OrderByDescending(card => card.Attack).FirstOrDefault();
             return best != null ? best.Name : (_lastBotAttacker ?? _lastBotSummoned);
         }
@@ -750,6 +756,8 @@ namespace WindBot.Game
         {
             int winner = packet.ReadByte();
             int result = GetLocalPlayer(winner);
+            if (!_isFour && winner >= 2)
+                result = 2; // a draw
             if (_isFour)
             {
                 // the winner's whole team wins (the message names its first player left)
@@ -781,6 +789,22 @@ namespace WindBot.Game
                 // won without every opponent knocked out (a card that wins the duel)
                 _victorySaid = true;
                 _ai.SayVictory(VictoryMonsterName(), _lastOutName);
+            }
+            if (_isFive)
+            {
+                // Five-a-side: only the player taking the turn, and only if their team wins on it.
+                if (result == 0 && _duel.Player == 0 && _botDeckActive)
+                    _ai.SayVictory(VictoryMonsterName(), _chatOpponent);
+            }
+            else if (!_isFour && result != 2)
+            {
+                // One-on-one and tag duels: every bot says one line: the winners a victory line
+                // naming the opponent playing now, the losers the knocked-out line ({0} what attacked
+                // them directly, if that was the finishing blow; {1} themselves; {2} the opponent).
+                if (result == 0)
+                    _ai.SayVictory(VictoryMonsterName(), _chatOpponent);
+                else
+                    _ai.SayKnockedOut(_lastDirectAttackerOnBot, OwnChatName(), _chatOpponent);
             }
             string textResult = (result == 2 ? "Draw" : result == 0 ? "Win" : "Lose");
             Logger.DebugWriteLine("Duel finished against " + otherName + ", result: " + textResult);
@@ -938,7 +962,8 @@ namespace WindBot.Game
         {
             if (_isFive)
             {
-                _ai.SetChatNames(FiveName(1, _fiveActive[1]), FiveName(0, _fiveActive[0]));
+                _chatOpponent = FiveName(1, _fiveActive[1]);
+                _ai.SetChatNames(_chatOpponent, FiveName(0, _fiveActive[0]));
                 return;
             }
             if (_room.Position < 0 || _room.Position > 3)
@@ -954,7 +979,59 @@ namespace WindBot.Game
                 opponent = _room.Position == 0 ? _room.Names[1] : _room.Names[0];
                 own = _room.Names[_room.Position];
             }
+            _chatOpponent = opponent;
             _ai.SetChatNames(opponent, own);
+        }
+
+        // Two-player modes (one-on-one, tag, five-a-side): the opponent playing now, for the lines.
+        private string _chatOpponent;
+
+        // Five-a-side: the column (0-4, from its side's own left) of a Monster Zone (the Extra Monster
+        // Zones are in columns 1 and 3).
+        private static int ZoneColumn(int sequence)
+        {
+            return sequence == 5 ? 1 : sequence == 6 ? 3 : sequence;
+        }
+
+        // Two-player modes: this bot's own name.
+        private string OwnChatName()
+        {
+            return _room.Position >= 0 && _room.Position < _room.Names.Length ? _room.Names[_room.Position] : null;
+        }
+
+        // Two-player modes: the opponent whose monster this is: in five-a-side the owner of its
+        // column, in a split-zone tag duel the owner of its half (the middle column is the playing
+        // member's), else the opponent playing now.
+        private string EnemyOwnerName(ClientCard card)
+        {
+            if (card != null && card.Controller == 1 && (card.Location == CardLocation.MonsterZone || card.Location == CardLocation.SpellZone))
+            {
+                if (_isFive)
+                    return FiveName(1, 4 - GameAI.ColumnOf(card)) ?? _chatOpponent;
+                if (_isTag && _ai.SplitZones && _room.Position >= 0 && _room.Position < 4)
+                {
+                    int seq = card.Sequence;
+                    bool monster = card.Location == CardLocation.MonsterZone;
+                    bool left = seq < 2 || (monster ? seq == 5 : seq == 6);
+                    bool right = (seq > 2 && seq < 5) || (monster ? seq == 6 : seq == 7);
+                    int enemyFirst = _room.Position < 2 ? 2 : 0;    // the team's first player has the left half
+                    if (left)
+                        return _room.Names[enemyFirst];
+                    if (right)
+                        return _room.Names[enemyFirst + 1];
+                }
+            }
+            return _chatOpponent;
+        }
+
+        // Two-player modes: the opponent a direct attack is aimed at: in five-a-side the owner of
+        // the column straight across (member m of ours faces their member 4 - m's column, which is
+        // their member with our column's number), else the opponent playing now.
+        private string DirectTargetName()
+        {
+            if (_isFive && _ai.OwnColumn >= 0)
+                return FiveName(1, _ai.OwnColumn) ?? _chatOpponent;
+            return _chatOpponent;
         }
 
         // Four players: we've decided on an attack, and the engine hasn't heard yet. The first
@@ -965,8 +1042,17 @@ namespace WindBot.Game
         // to that when the engine asks.
         private void OnBotAttackDecided(ClientCard attacker, ClientCard defender)
         {
-            if (!_isFour || attacker == null)
+            if (attacker == null)
                 return;
+            if (!_isFour)
+            {
+                // two-player modes: the same lines, naming the opponent attacked
+                if (defender != null)
+                    _ai.OnFourPlayerAttack(attacker.Name, defender.Name, EnemyOwnerName(defender), false);
+                else
+                    _ai.OnFourPlayerAttack(attacker.Name, null, DirectTargetName(), true);
+                return;
+            }
             if (defender != null)
             {
                 _plannedDirectSide = -1;
@@ -1109,6 +1195,12 @@ namespace WindBot.Game
             _duel.Player = GetLocalPlayer(turnPlayer);
             if (_duel.IsFourPlayer)
                 _turnSide = GetSide(turnPlayer);
+            if (_isFive)
+            {
+                // five-a-side: the victory line's monster comes from the winning turn itself
+                _lastBotAttacker = null;
+                _lastBotSummoned = null;
+            }
             _ai.OnNewTurn();
         }
 
@@ -1189,7 +1281,20 @@ namespace WindBot.Game
             int currentLocation = packet.ReadByte();
             int currentSequence = packet.ReadSByte();
             int currentPosition = packet.ReadByte();
-            packet.ReadInt32(); // reason
+            int reason = packet.ReadInt32();
+
+            // Five-a-side: a monster in our own column destroyed by battle (ours, whether it attacked
+            // or was attacked; when both monsters are destroyed, both players speak): the
+            // "attacked directly" line, {0} the monster that destroyed it, {1} us, {2} its owner
+            // (battles are straight across, so the owner of the column facing ours).
+            const int ReasonDestroy = 0x1, ReasonBattle = 0x20;
+            if (_isFive && previousControler == 0 && previousLocation == (int)CardLocation.MonsterZone
+                && (reason & (ReasonDestroy | ReasonBattle)) == (ReasonDestroy | ReasonBattle)
+                && _ai.OwnColumn >= 0 && ZoneColumn(previousSequence) == _ai.OwnColumn)
+            {
+                ClientCard destroyer = _duel.Fields[1].BattlingMonster;
+                _ai.SayKnockedOut(destroyer?.Name, OwnChatName(), DirectTargetName());
+            }
 
             // Keep logical locations for AI callbacks. The compound protocol locations are
             // still needed below to find the host card and the material by index.
@@ -1374,6 +1479,15 @@ namespace WindBot.Game
                     _lastDirectAttackerSide = ca;
                 }
             }
+            else if (ca == 0 && _botDeckActive)
+            {
+                // two-player modes: our attack (the line, if we didn't say it when deciding on it)
+                _lastBotAttacker = attackcard?.Name;
+                _ai.OnFourPlayerAttack(attackcard?.Name, ld == 0 ? null : defendcard?.Name,
+                    ld == 0 ? DirectTargetName() : EnemyOwnerName(defendcard), ld == 0);
+            }
+            else if (ld == 0 && ca == 1)
+                _lastDirectAttackerOnBot = attackcard?.Name;   // for the line if this knocks us out
             _ai.OnAttack();
 
             if (ld == 0 && ca != 0 && (!_duel.IsFourPlayer || cd == 0))
@@ -2626,12 +2740,24 @@ namespace WindBot.Game
             ClientCard card = _duel.GetCard(currentControler, (CardLocation)currentLocation, currentSequence);
             _duel.SummoningCards.Add(card);
             _duel.LastSummonPlayer = _duel.View(currentControler);
-            if (_duel.IsFourPlayer && currentControler == 0)
+            if (IsOurSummon(currentControler))
             {
                 if (card?.Name != null)
                     _lastBotSummoned = card.Name;
                 _ai.OnFourPlayerSummon(card);
             }
+        }
+
+        // Bot Theater: whether a monster being summoned on this side is our summon (for the summon
+        // line): our side, and in tag duels and five-a-side, while we're the one playing for it;
+        // in five-a-side only on our own turn (only the player taking the turn speaks then).
+        private bool IsOurSummon(int controller)
+        {
+            if (controller != 0)
+                return false;
+            if (_duel.IsFourPlayer)
+                return true;
+            return _botDeckActive && (!_isFive || _duel.Player == 0);
         }
 
         private void OnSummoned(BinaryReader packet)
@@ -2657,7 +2783,7 @@ namespace WindBot.Game
             ClientCard card = _duel.GetCard(currentControler, (CardLocation)currentLocation, currentSequence);
             _duel.SummoningCards.Add(card);
             _duel.LastSummonPlayer = _duel.View(currentControler);
-            if (_duel.IsFourPlayer && currentControler == 0)
+            if (IsOurSummon(currentControler))
             {
                 if (card?.Name != null)
                     _lastBotSummoned = card.Name;
