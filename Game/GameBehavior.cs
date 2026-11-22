@@ -796,11 +796,12 @@ namespace WindBot.Game
                 if (result == 0 && _duel.Player == 0 && _botDeckActive)
                     _ai.SayVictory(VictoryMonsterName(), _chatOpponent);
             }
-            else if (!_isFour && result != 2)
+            else if (!_isFour && result != 2 && TagEndSpeaker())
             {
-                // One-on-one and tag duels: every bot says one line: the winners a victory line
-                // naming the opponent playing now, the losers the knocked-out line ({0} what attacked
-                // them directly, if that was the finishing blow; {1} themselves; {2} the opponent).
+                // One-on-one and tag duels: the winners say a victory line naming the opponent
+                // playing now, the losers the knocked-out line ({0} what attacked them directly, if
+                // that was the finishing blow; {1} themselves; {2} the opponent). In a tag duel only
+                // one player a team speaks (TagEndSpeaker).
                 if (result == 0)
                     _ai.SayVictory(VictoryMonsterName(), _chatOpponent);
                 else
@@ -808,6 +809,20 @@ namespace WindBot.Game
             }
             string textResult = (result == 2 ? "Draw" : result == 0 ? "Win" : "Lose");
             Logger.DebugWriteLine("Duel finished against " + otherName + ", result: " + textResult);
+        }
+
+        // Bot Theater: at the end of a tag duel the game shows one speech bubble each side of the
+        // screen, so one player a team speaks: the player whose turn it is, and from the other team
+        // the player on the other side of the screen, which is the one in the same lobby slot (a
+        // team's first player has the left of the field from its own side, so the two teams' first
+        // players are on opposite sides of the screen). Everyone speaks in other duels.
+        private bool TagEndSpeaker()
+        {
+            if (!_isTag)
+                return true;
+            if (_duel.Player == 0)
+                return _botDeckActive;
+            return _room.Position % 2 == _enemyActiveMember;
         }
 
         private void OnDraw(BinaryReader packet)
