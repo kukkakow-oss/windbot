@@ -1262,7 +1262,9 @@ namespace WindBot.Game
                 return announced;
             else if (announced > 0)
                 Logger.WriteErrorLine("Pre-announced card cant be used: " + announced);
-            return avail[0];
+            // Bot Theater: with nothing chosen, declare any card that fits, at random (the
+            // first in the list was always the lowest card number: "Parallel Teleport").
+            return avail[Program.Rand.Next(avail.Count)];
         }
 
         // _ Others functions _
