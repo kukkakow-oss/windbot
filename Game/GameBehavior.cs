@@ -40,6 +40,17 @@ namespace WindBot.Game
         private readonly int[] _fivePos = new int[10];
         private readonly int[] _seatLobby = { 0, 1, 2, 3 };    // four players: the lobby position of each seat's player
         private bool _botDeckActive;
+        // Bot Theater, tag duels: whether we take our team's first turn (we say an "endturn" line
+        // at the end of each of our turns; our partner, who plays second, a "newturn" line at the
+        // start of each of theirs). Found at our team's first Draw Phase: who plays a team's first
+        // turn depends on the order of play (the second team hands over before its first turn
+        // unless turns go clockwise).
+        // Bot Theater, tag duels: who says the "endturn" and "newturn" lines (see TagTurnLines).
+        private bool _tagFirstMember;
+        private bool _tagTeamStarted;
+        private int _tagOrder;              // 0 not known yet, 1 clockwise (each team plays twice in a row), 2 the usual
+        private bool _tagSwappedThisTurn;
+        private bool _tagPhaseSeenThisTurn;
         private bool _botDeckNeedsInitialHandSync;
         private bool _chatPlayerOrderSwapped;
         private int _select_hint;
@@ -584,6 +595,13 @@ namespace WindBot.Game
             _botDeckNeedsInitialHandSync = (_isTag || _isFive) && !_botDeckActive;
             _duel.Fields[0].DeckTrackingActive = _botDeckActive;
             _ai.IsActiveTeammate = _botDeckActive;  // Bot Theater: only the playing teammate reacts in chat
+            _tagFirstMember = false;
+            _tagTeamStarted = false;
+            _tagOrder = 0;
+            _tagSwappedThisTurn = false;
+            _tagPhaseSeenThisTurn = false;
+            // Bot Theater: {3} in a line is our tag partner
+            _ai.SetPartnerName(_isTag && _room.Position >= 0 && _room.Position < 4 ? _room.Names[_room.Position ^ 1] : null);
             // The opponent team starts the same way: its lower slot if it goes first, its upper one if not.
             _enemyActiveMember = _duel.IsFirst ? 1 : 0;
             if (_isFive)
@@ -1127,6 +1145,7 @@ namespace WindBot.Game
             int hcount = packet.ReadByte();
             /*int topcode = */ packet.ReadInt32();
             ClientField field = _duel.Sides[player];
+            _tagSwappedThisTurn = true;
 
             if (player == 0)
             {
@@ -1206,6 +1225,8 @@ namespace WindBot.Game
         private void OnNewTurn(BinaryReader packet)
         {
             _duel.Turn++;
+            _tagSwappedThisTurn = false;
+            _tagPhaseSeenThisTurn = false;
             int turnPlayer = packet.ReadByte();
             _duel.Player = GetLocalPlayer(turnPlayer);
             if (_duel.IsFourPlayer)
@@ -1222,6 +1243,8 @@ namespace WindBot.Game
         private void OnNewPhase(BinaryReader packet)
         {
             _duel.Phase = (DuelPhase)packet.ReadInt16();
+            if (_isTag)
+                TagTurnLines();
             if (_debug && _duel.Phase == DuelPhase.Standby)
             {
                 Logger.WriteLine("*********Bot Hand*********");
@@ -1256,6 +1279,44 @@ namespace WindBot.Game
             }
             _select_hint = 0;
             _ai.OnNewPhase();
+        }
+
+        // Bot Theater, tag duels: when a team's first player ends their turn they say an "endturn"
+        // line, and when its second player starts theirs they say a "newturn" line. In the
+        // clockwise order each team plays twice in a row after the first turn (an even-numbered
+        // turn, then the odd one after it), so the player of the even turn hands over to their
+        // partner; the duel's first turn is played alone and gets neither line. In the usual
+        // order the teams take turns, and the player who played the team's first turn is its
+        // first player. The game doesn't tell the bots which order it is, but it shows at turn 2:
+        // in the clockwise order that turn's team doesn't swap players at its start.
+        private void TagTurnLines()
+        {
+            bool firstPhase = !_tagPhaseSeenThisTurn;
+            _tagPhaseSeenThisTurn = true;
+            if (firstPhase && _duel.Turn == 2 && _tagOrder == 0)
+                _tagOrder = _tagSwappedThisTurn ? 2 : 1;
+            if (firstPhase && _duel.Player == 0 && !_tagTeamStarted)
+            {
+                _tagTeamStarted = true;
+                _tagFirstMember = _botDeckActive;
+            }
+            if (_duel.Player != 0 || !_botDeckActive)
+                return;
+            bool endPhase = _duel.Phase == DuelPhase.End;
+            if (_tagOrder == 1)
+            {
+                if (endPhase && _duel.Turn % 2 == 0)
+                    _ai.SayTagTurnLine(false);
+                else if (firstPhase && _duel.Turn % 2 == 1 && _duel.Turn > 1)
+                    _ai.SayTagTurnLine(true);
+            }
+            else if (_tagOrder == 2)
+            {
+                if (endPhase && _tagFirstMember)
+                    _ai.SayTagTurnLine(false);
+                else if (firstPhase && !_tagFirstMember)
+                    _ai.SayTagTurnLine(true);
+            }
         }
 
         private void OnDamage(BinaryReader packet)

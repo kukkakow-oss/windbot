@@ -70,6 +70,9 @@ namespace WindBot.Game.AI
         // player now playing on our side).
         public string OpponentName { get; set; }
         public string OwnName { get; set; }
+        // Bot Theater: {3} in any line is the speaker's tag partner (in other duels there's none,
+        // so a line without {3} is said instead if there is one).
+        public string PartnerName { get; set; }
 
         // Bot Theater (every mode; it began with the four-player free-for-all, where the game shows
         // what a bot says in a speech bubble from its portrait): the bots only say these: a summon
@@ -113,6 +116,14 @@ namespace WindBot.Game.AI
             SendFourPlayerLine(_directattack, monster, lastOpponent, lastOpponent);
         }
 
+        // Tag duels: a "newturn" line when our team's second player starts their turn, or an
+        // "endturn" line when its first player's turn reaches the End Phase. {1} is us, {2} the
+        // opponent now playing, {3} our partner.
+        public void SendTagTurnLine(bool newTurn)
+        {
+            SendFourPlayerLine(newTurn ? _newturn : _endturn, null, OwnName, OpponentName);
+        }
+
         // A random line from the list, with args in {0}, {1}... If something is missing (no card
         // name, say), a line that doesn't need it if there is one; else the word for a face-down
         // monster in {0} and "you" for the rest.
@@ -120,12 +131,17 @@ namespace WindBot.Game.AI
         {
             if (!_game._chat || array == null || array.Count == 0)
                 return;
+            // {3}: our tag partner, in every line
+            string[] all = new string[Math.Max(args.Length, 4)];
+            Array.Copy(args, all, args.Length);
+            all[3] = PartnerName;
+            args = all;
             List<string> pool = array.Where(line => HasEverything(line, args)).ToList();
             if (pool.Count == 0)
                 pool = array.ToList();
             object[] filled = new object[args.Length];
             for (int i = 0; i < args.Length; ++i)
-                filled[i] = !string.IsNullOrEmpty(args[i]) ? args[i] : (i == 0 ? _facedownmonstername : "you");
+                filled[i] = !string.IsNullOrEmpty(args[i]) ? args[i] : (i == 0 ? _facedownmonstername : i == 3 ? "my partner" : "you");
             string message = PickLine(pool, filled);
             if (string.IsNullOrEmpty(message))
                 return;

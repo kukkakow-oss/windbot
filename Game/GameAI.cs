@@ -314,6 +314,18 @@ namespace WindBot.Game
             _dialogs.OwnName = own;
         }
 
+        // Bot Theater: who {3} is in our lines (our tag partner; null if we have none).
+        public void SetPartnerName(string partner)
+        {
+            _dialogs.PartnerName = partner;
+        }
+
+        // Bot Theater, tag duels: our team's turn hand-over lines ("newturn" or "endturn").
+        public void SayTagTurnLine(bool newTurn)
+        {
+            _dialogs.SendTagTurnLine(newTurn);
+        }
+
         /// <summary>
         /// Called when the AI got attack directly.
         /// </summary>
