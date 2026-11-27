@@ -51,6 +51,7 @@ namespace WindBot.Game
         private int _tagOrder;              // 0 not known yet, 1 clockwise (each team plays twice in a row), 2 the usual
         private bool _tagSwappedThisTurn;
         private bool _tagPhaseSeenThisTurn;
+        private bool _tagEndLineSaid;       // this turn's "endturn" line is said
         private bool _botDeckNeedsInitialHandSync;
         private bool _chatPlayerOrderSwapped;
         private int _select_hint;
@@ -600,6 +601,7 @@ namespace WindBot.Game
             _tagOrder = 0;
             _tagSwappedThisTurn = false;
             _tagPhaseSeenThisTurn = false;
+            _tagEndLineSaid = false;
             // Bot Theater: {3} in a line is our tag partner
             _ai.SetPartnerName(_isTag && _room.Position >= 0 && _room.Position < 4 ? _room.Names[_room.Position ^ 1] : null);
             // The opponent team starts the same way: its lower slot if it goes first, its upper one if not.
@@ -1227,6 +1229,7 @@ namespace WindBot.Game
             _duel.Turn++;
             _tagSwappedThisTurn = false;
             _tagPhaseSeenThisTurn = false;
+            _tagEndLineSaid = false;
             int turnPlayer = packet.ReadByte();
             _duel.Player = GetLocalPlayer(turnPlayer);
             if (_duel.IsFourPlayer)
@@ -1289,6 +1292,11 @@ namespace WindBot.Game
         // order the teams take turns, and the player who played the team's first turn is its
         // first player. The game doesn't tell the bots which order it is, but it shows at turn 2:
         // in the clockwise order that turn's team doesn't swap players at its start.
+        // The "endturn" line is said when we choose to go to the End Phase (SayTagEndTurnLine), so
+        // it reaches the game before the End Phase does: the game goes straight on into the next
+        // turn without waiting for anyone, and a line said once the End Phase had come would only
+        // be shown after the hands had switched. If the turn gets to its End Phase some other way,
+        // the line is said then.
         private void TagTurnLines()
         {
             bool firstPhase = !_tagPhaseSeenThisTurn;
@@ -1302,20 +1310,21 @@ namespace WindBot.Game
             }
             if (_duel.Player != 0 || !_botDeckActive)
                 return;
-            bool endPhase = _duel.Phase == DuelPhase.End;
-            if (_tagOrder == 1)
+            if (_duel.Phase == DuelPhase.End)
+                SayTagEndTurnLine();
+            else if (firstPhase && (_tagOrder == 1 ? _duel.Turn % 2 == 1 && _duel.Turn > 1 : _tagOrder == 2 && !_tagFirstMember))
+                _ai.SayTagTurnLine(true);
+        }
+
+        // Our "endturn" line, if we're the player who says it this turn and haven't yet.
+        private void SayTagEndTurnLine()
+        {
+            if (!_isTag || _tagEndLineSaid || _duel.Player != 0 || !_botDeckActive)
+                return;
+            if (_tagOrder == 1 ? _duel.Turn % 2 == 0 : _tagOrder == 2 && _tagFirstMember)
             {
-                if (endPhase && _duel.Turn % 2 == 0)
-                    _ai.SayTagTurnLine(false);
-                else if (firstPhase && _duel.Turn % 2 == 1 && _duel.Turn > 1)
-                    _ai.SayTagTurnLine(true);
-            }
-            else if (_tagOrder == 2)
-            {
-                if (endPhase && _tagFirstMember)
-                    _ai.SayTagTurnLine(false);
-                else if (firstPhase && !_tagFirstMember)
-                    _ai.SayTagTurnLine(true);
+                _tagEndLineSaid = true;
+                _ai.SayTagTurnLine(false);
             }
         }
 
@@ -1861,6 +1870,8 @@ namespace WindBot.Game
             battle.CanEndPhase = packet.ReadByte() != 0;
 
             BattlePhaseAction battleAction = _ai.OnSelectBattleCmd(battle);
+            if (battleAction.Action == BattlePhaseAction.BattleAction.ToEndPhase)
+                SayTagEndTurnLine();
             if (battleAction.Action == BattlePhaseAction.BattleAction.Activate)
                 _lastActivatedCard = battle.ActivableCards.FirstOrDefault(card => card.ActionIndex[0] == battleAction.Index);
             Connection.Send(CtosMessage.Response, battleAction.ToValue());
@@ -2256,6 +2267,8 @@ namespace WindBot.Game
             packet.ReadByte(); // CanShuffle
 
             MainPhaseAction mainAction = _ai.OnSelectIdleCmd(main);
+            if (mainAction.Action == MainPhaseAction.MainAction.ToEndPhase)
+                SayTagEndTurnLine();
             if (mainAction.Action == MainPhaseAction.MainAction.Activate)
                 _lastActivatedCard = main.ActivableCards.FirstOrDefault(card => card.ActionActivateIndex.Values.Contains(mainAction.Index));
             Connection.Send(CtosMessage.Response, mainAction.ToValue());
